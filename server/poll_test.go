@@ -150,6 +150,60 @@ func TestPollSubscription_DuplicateConferenceNotPostedAgain(t *testing.T) {
 	}
 }
 
+// TestPollSubscription_StaleRecordNotRepostedAfterStateTTL is a regression test for the bug where
+// a recurring meeting whose ConferencePostState had TTL'd out would be re-posted as if it were new.
+// The Google API still returns the most-recent (already-processed) conference record on every poll,
+// so the watermark filter must exclude it strictly — even when KV state has expired.
+func TestPollSubscription_StaleRecordNotRepostedAfterStateTTL(t *testing.T) {
+	now := time.Now().UTC()
+	staleStart := now.Add(-10 * 24 * time.Hour) // older than the 7-day state TTL
+	token := &kvstore.OAuth2Token{
+		AccessToken: "test-token",
+		Expiry:      now.Add(time.Hour),
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v2/conferenceRecords" {
+			w.WriteHeader(http.StatusOK)
+			require.NoError(t, json.NewEncoder(w).Encode(map[string]any{
+				"conferenceRecords": []conferenceRecord{
+					{Name: "conferenceRecords/recOld", StartTime: &staleStart},
+				},
+			}))
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		require.NoError(t, json.NewEncoder(w).Encode(map[string]any{}))
+	}))
+	defer server.Close()
+
+	origURL := googleMeetURL
+	origClient := httpClient
+	googleMeetURL = server.URL + "/v2"
+	httpClient = server.Client()
+	defer func() { googleMeetURL = origURL; httpClient = origClient }()
+
+	api := &mockPluginAPI{siteURL: "http://localhost:8065", captureAllPosts: true}
+	kv := newMockKVStore()
+	kv.tokens["user1"] = token
+
+	// Watermark exactly equals the stale record's StartTime, mirroring how it was set
+	// when that record was last processed. No ConferencePostState — simulates TTL expiry.
+	sub := &kvstore.Subscription{
+		SpaceID:                 "spaces/abc123",
+		MeetingCode:             "abc-mnop-xyz",
+		ChannelID:               "chan1",
+		CreatedBy:               "user1",
+		LastSeenConferenceStart: staleStart,
+	}
+
+	p := pollTestPlugin(t, api, kv)
+	p.pollSubscription(kv, sub)
+
+	assert.Empty(t, api.allPosts, "stale record should not be re-posted after ConferencePostState TTL expiry")
+	assert.Empty(t, sub.ActiveConferenceIDs, "stale record should not be tracked as active")
+}
+
 func TestPollConferenceArtifacts_RecordingPostedOnce(t *testing.T) {
 	now := time.Now().UTC()
 	token := &kvstore.OAuth2Token{
