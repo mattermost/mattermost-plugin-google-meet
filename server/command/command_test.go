@@ -29,6 +29,7 @@ func (m *minimalAPI) GetChannel(channelID string) (*model.Channel, *model.AppErr
 	}
 	return &model.Channel{Id: channelID, Type: model.ChannelTypeOpen}, nil
 }
+
 func (m *minimalAPI) HasPermissionToChannel(_, _ string, _ *model.Permission) bool {
 	return !m.channelPermDeny
 }
