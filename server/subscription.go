@@ -100,43 +100,45 @@ func (p *Plugin) AddSubscription(userID, channelID, meetingCodeOrURL, descriptio
 }
 
 // RemoveSubscription removes a channel subscription for the given meeting code.
-func (p *Plugin) RemoveSubscription(userID, meetingCodeOrURL string) error {
+// The subscription must belong to channelID (no cross-channel removal).
+// Resolution is local — no Google API call required.
+func (p *Plugin) RemoveSubscription(userID, channelID, meetingCodeOrURL string) error {
 	store, err := p.getOAuthKVStore()
 	if err != nil {
 		return err
 	}
 
-	token, err := p.getValidToken(userID)
-	if err != nil {
-		return fmt.Errorf("failed to get token: %w", err)
-	}
-	if token == nil {
-		return errors.New("user not connected to Google")
-	}
-
 	meetingCode := extractMeetingCode(meetingCodeOrURL)
 
-	space, err := p.getSpace(token, meetingCode)
+	spaceIDs, err := store.ListAllSubscriptionSpaceIDs()
 	if err != nil {
-		if errors.Is(err, ErrInsufficientScopes) {
-			if delErr := store.DeleteOAuth2Token(userID); delErr != nil {
-				p.API.LogWarn("Failed to delete token after insufficient scopes", "user_id", userID, "error", delErr.Error())
-			}
-			return command.ErrNeedsReconnect
-		}
-		return fmt.Errorf("could not find meeting space %q: %w", meetingCode, err)
+		return fmt.Errorf("failed to list subscriptions: %w", err)
 	}
 
-	spaceID := space.Name
+	var match *kvstore.Subscription
+	for _, spaceID := range spaceIDs {
+		sub, subErr := store.GetSubscription(spaceID)
+		if subErr != nil || sub == nil {
+			continue
+		}
+		if sub.MeetingCode == meetingCode && sub.ChannelID == channelID {
+			match = sub
+			break
+		}
+	}
+	if match == nil {
+		return fmt.Errorf("no subscription to %q found in this channel", meetingCode)
+	}
 
-	if err := store.DeleteSubscription(spaceID); err != nil {
+	if err := store.DeleteSubscription(match.SpaceID); err != nil {
 		return fmt.Errorf("failed to delete subscription: %w", err)
 	}
 
-	if err := store.RemoveFromUserSubscriptionIndex(userID, spaceID); err != nil {
-		p.API.LogWarn("Failed to update subscription index on remove", "user_id", userID, "space_id", spaceID, "error", err.Error())
+	if err := store.RemoveFromUserSubscriptionIndex(match.CreatedBy, match.SpaceID); err != nil {
+		p.API.LogWarn("Failed to update subscription index on remove", "user_id", match.CreatedBy, "space_id", match.SpaceID, "error", err.Error())
 	}
 
+	p.API.LogInfo("Subscription removed", "removed_by", userID, "channel_id", channelID, "space_id", match.SpaceID, "meeting_code", meetingCode)
 	return nil
 }
 

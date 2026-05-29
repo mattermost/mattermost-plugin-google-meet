@@ -375,14 +375,14 @@ func (p *Plugin) getSpace(token *kvstore.OAuth2Token, meetingCodeOrID string) (*
 }
 
 // listConferenceRecords returns conference records for the given space that started strictly after `since`.
-// Strict-after (not >=) is critical: the caller uses the latest processed record's StartTime as the
-// next watermark, so including equal timestamps would re-fetch the most recent record on every poll.
-// That would normally be harmless (deduplicated by ConferencePostState in KV), but that state has a
-// 7-day TTL — a recurring meeting where one iteration is skipped would otherwise resurrect the prior
-// iteration as a "new" conference once the state expired.
-// Time filtering is applied in Go rather than via the API filter to avoid potential API format issues.
+// The filter is pushed to the API (start_time>=) to avoid fetching full history, and re-checked
+// client-side with strict-after because our watermark semantics require excluding the equal timestamp.
 func (p *Plugin) listConferenceRecords(token *kvstore.OAuth2Token, spaceName string, since time.Time) ([]conferenceRecord, error) {
-	filter := fmt.Sprintf(`space.name="%s"`, spaceName)
+	filterParts := []string{fmt.Sprintf(`space.name="%s"`, spaceName)}
+	if !since.IsZero() {
+		filterParts = append(filterParts, fmt.Sprintf(`start_time>="%s"`, since.UTC().Format(time.RFC3339Nano)))
+	}
+	filter := strings.Join(filterParts, " AND ")
 	basePath := "/conferenceRecords?" + url.Values{"filter": {filter}}.Encode()
 	all, err := p.listConferenceRecordsPaged(token, basePath)
 	if err != nil {

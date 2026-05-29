@@ -40,7 +40,7 @@ type MeetingStarter interface {
 	AreSubscriptionsEnabled() bool
 	// Subscription methods
 	AddSubscription(userID, channelID, meetingCodeOrURL, description string) (*kvstore.Subscription, error)
-	RemoveSubscription(userID, spaceID string) error
+	RemoveSubscription(userID, channelID, meetingCodeOrURL string) error
 	ListSubscriptions(userID string) ([]*SubscriptionInfo, error)
 }
 
@@ -187,6 +187,10 @@ func (c *Handler) executeSubscriptionCommand(args *model.CommandArgs, subFields 
 		return c.ephemeral("Channel subscriptions are disabled. Ask your system administrator to enable **Post Recordings, Transcripts and Smart Notes** in the plugin settings.")
 	}
 
+	if c.client == nil || !c.client.User.HasPermissionToChannel(args.UserId, args.ChannelId, model.PermissionManageChannelRoles) {
+		return c.ephemeral("Managing Google Meet subscriptions requires channel admin or system admin permissions. Please ask a channel or system administrator to run this command for you.")
+	}
+
 	if resp := c.requireConnected(args.UserId); resp != nil {
 		return resp
 	}
@@ -242,7 +246,7 @@ func (c *Handler) executeSubscriptionAdd(args *model.CommandArgs, meetingInput, 
 }
 
 func (c *Handler) executeSubscriptionRemove(args *model.CommandArgs, meetingInput string) *model.CommandResponse {
-	if err := c.meetingStarter.RemoveSubscription(args.UserId, meetingInput); err != nil {
+	if err := c.meetingStarter.RemoveSubscription(args.UserId, args.ChannelId, meetingInput); err != nil {
 		if errors.Is(err, ErrNeedsReconnect) {
 			return c.needsReconnectResponse()
 		}

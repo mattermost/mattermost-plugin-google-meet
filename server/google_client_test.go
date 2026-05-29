@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -109,8 +110,10 @@ func TestListConferenceRecords_WithSinceFilter(t *testing.T) {
 	after := since.Add(time.Hour)
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Time filtering is now done in Go — the API query should NOT include start_time.
-		assert.NotContains(t, r.URL.RawQuery, "start_time")
+		rawFilter, err := url.QueryUnescape(r.URL.RawQuery)
+		require.NoError(t, err)
+		assert.Contains(t, rawFilter, `start_time>="2024-01-15T12:00:00Z"`)
+		assert.Contains(t, rawFilter, `space.name="spaces/abc123"`)
 		w.WriteHeader(http.StatusOK)
 		require.NoError(t, json.NewEncoder(w).Encode(map[string]any{
 			"conferenceRecords": []conferenceRecord{
