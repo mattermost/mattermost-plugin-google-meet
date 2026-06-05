@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"testing"
 	"time"
 
@@ -22,17 +23,20 @@ import (
 // mockPluginAPI implements the plugin.API interface methods we need for testing.
 type mockPluginAPI struct {
 	plugin.API
-	siteURL        string
-	user           *model.User
-	userErr        *model.AppError
-	channel        *model.Channel
-	channelErr     *model.AppError
-	post           *model.Post
-	postErr        *model.AppError
-	ephemeralPosts []*model.Post
-	logged         []string
-	hasPerm        bool
-	wsPublished    []mockWSPublish
+	siteURL         string
+	user            *model.User
+	userErr         *model.AppError
+	channel         *model.Channel
+	channelErr      *model.AppError
+	post            *model.Post
+	postCreate      func(*model.Post) (*model.Post, *model.AppError)
+	postErr         *model.AppError
+	ephemeralPosts  []*model.Post
+	logged          []string
+	hasPerm         bool
+	captureAllPosts bool
+	allPosts        []*model.Post
+	wsPublished     []mockWSPublish
 }
 
 type mockWSPublish struct {
@@ -79,8 +83,17 @@ func (m *mockPluginAPI) GetChannel(channelID string) (*model.Channel, *model.App
 
 func (m *mockPluginAPI) CreatePost(post *model.Post) (*model.Post, *model.AppError) {
 	m.post = post
+	if m.captureAllPosts {
+		m.allPosts = append(m.allPosts, post)
+	}
+	if m.postCreate != nil {
+		return m.postCreate(post)
+	}
 	if m.postErr != nil {
 		return nil, m.postErr
+	}
+	if post.Id == "" {
+		post.Id = model.NewId()
 	}
 	return post, nil
 }
@@ -88,6 +101,14 @@ func (m *mockPluginAPI) CreatePost(post *model.Post) (*model.Post, *model.AppErr
 func (m *mockPluginAPI) SendEphemeralPost(_ string, post *model.Post) *model.Post {
 	m.ephemeralPosts = append(m.ephemeralPosts, post)
 	return post
+}
+
+func (m *mockPluginAPI) UploadFile(_ []byte, channelID, filename string) (*model.FileInfo, *model.AppError) {
+	return &model.FileInfo{Id: model.NewId(), Name: filename, ChannelId: channelID}, nil
+}
+
+func (m *mockPluginAPI) KVSetWithOptions(key string, value []byte, options model.PluginKVSetOptions) (bool, *model.AppError) {
+	return true, nil
 }
 
 func (m *mockPluginAPI) HasPermissionToChannel(userID, channelID string, permission *model.Permission) bool {
@@ -104,15 +125,25 @@ func (m *mockPluginAPI) PublishWebSocketEvent(event string, payload map[string]a
 
 // mockKVStore implements kvstore.KVStore for testing.
 type mockKVStore struct {
-	tokens map[string]*kvstore.OAuth2Token
-	states map[string]string
-	err    error
+	tokens            map[string]*kvstore.OAuth2Token
+	states            map[string]string
+	subscriptions     map[string]*kvstore.Subscription
+	subscriptionIndex []string
+	userSubIndex      map[string][]string
+	conferencePosts   map[string]*kvstore.ConferencePostState
+	adHocPosts        map[string]*kvstore.AdHocMeetingPost
+	adHocIndex        []string
+	err               error
 }
 
 func newMockKVStore() *mockKVStore {
 	return &mockKVStore{
-		tokens: make(map[string]*kvstore.OAuth2Token),
-		states: make(map[string]string),
+		tokens:          make(map[string]*kvstore.OAuth2Token),
+		states:          make(map[string]string),
+		subscriptions:   make(map[string]*kvstore.Subscription),
+		userSubIndex:    make(map[string][]string),
+		conferencePosts: make(map[string]*kvstore.ConferencePostState),
+		adHocPosts:      make(map[string]*kvstore.AdHocMeetingPost),
 	}
 }
 
@@ -154,6 +185,114 @@ func (m *mockKVStore) GetAndDeleteOAuth2State(state string) (string, error) {
 	}
 	delete(m.states, state)
 	return userID, nil
+}
+
+func (m *mockKVStore) StoreSubscription(sub *kvstore.Subscription) error {
+	if m.err != nil {
+		return m.err
+	}
+	m.subscriptions[sub.SpaceID] = sub
+	return nil
+}
+
+func (m *mockKVStore) GetSubscription(spaceID string) (*kvstore.Subscription, error) {
+	if m.err != nil {
+		return nil, m.err
+	}
+	sub, ok := m.subscriptions[spaceID]
+	if !ok {
+		return nil, kvstore.ErrSubscriptionNotFound
+	}
+	return sub, nil
+}
+
+func (m *mockKVStore) DeleteSubscription(spaceID string) error {
+	delete(m.subscriptions, spaceID)
+	return nil
+}
+
+func (m *mockKVStore) ListAllSubscriptionSpaceIDs() ([]string, error) {
+	if m.err != nil {
+		return nil, m.err
+	}
+	return m.subscriptionIndex, nil
+}
+
+func (m *mockKVStore) AddToUserSubscriptionIndex(userID, spaceID string) error {
+	if !slices.Contains(m.subscriptionIndex, spaceID) {
+		m.subscriptionIndex = append(m.subscriptionIndex, spaceID)
+	}
+	if !slices.Contains(m.userSubIndex[userID], spaceID) {
+		m.userSubIndex[userID] = append(m.userSubIndex[userID], spaceID)
+	}
+	return nil
+}
+
+func (m *mockKVStore) RemoveFromUserSubscriptionIndex(userID, spaceID string) error {
+	filtered := m.subscriptionIndex[:0]
+	for _, id := range m.subscriptionIndex {
+		if id != spaceID {
+			filtered = append(filtered, id)
+		}
+	}
+	m.subscriptionIndex = filtered
+	userFiltered := m.userSubIndex[userID][:0]
+	for _, id := range m.userSubIndex[userID] {
+		if id != spaceID {
+			userFiltered = append(userFiltered, id)
+		}
+	}
+	m.userSubIndex[userID] = userFiltered
+	return nil
+}
+
+func (m *mockKVStore) ListUserSubscriptionSpaceIDs(userID string) ([]string, error) {
+	return m.userSubIndex[userID], nil
+}
+
+func (m *mockKVStore) StoreConferencePostState(name string, state *kvstore.ConferencePostState) error {
+	m.conferencePosts[name] = state
+	return nil
+}
+
+func (m *mockKVStore) GetConferencePostState(name string) (*kvstore.ConferencePostState, error) {
+	return m.conferencePosts[name], nil
+}
+
+func (m *mockKVStore) StoreAdHocMeetingPost(spaceID string, entry *kvstore.AdHocMeetingPost) error {
+	m.adHocPosts[spaceID] = entry
+	return nil
+}
+
+func (m *mockKVStore) GetAdHocMeetingPost(spaceID string) (*kvstore.AdHocMeetingPost, error) {
+	return m.adHocPosts[spaceID], nil
+}
+
+func (m *mockKVStore) DeleteAdHocMeetingPost(spaceID string) error {
+	delete(m.adHocPosts, spaceID)
+	return nil
+}
+
+func (m *mockKVStore) ListAdHocSpaceIDs() ([]string, error) {
+	return m.adHocIndex, nil
+}
+
+func (m *mockKVStore) AddToAdHocIndex(spaceID string) error {
+	if !slices.Contains(m.adHocIndex, spaceID) {
+		m.adHocIndex = append(m.adHocIndex, spaceID)
+	}
+	return nil
+}
+
+func (m *mockKVStore) RemoveFromAdHocIndex(spaceID string) error {
+	filtered := m.adHocIndex[:0]
+	for _, id := range m.adHocIndex {
+		if id != spaceID {
+			filtered = append(filtered, id)
+		}
+	}
+	m.adHocIndex = filtered
+	return nil
 }
 
 func setupPlugin(t *testing.T) (*Plugin, *mockPluginAPI, *mockKVStore) {

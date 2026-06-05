@@ -56,9 +56,10 @@ func TestCreateMeeting_Success(t *testing.T) {
 		Expiry:      time.Now().Add(time.Hour),
 	}
 
-	meetURL, err := p.createMeeting(token, "my topic")
+	meetURL, spaceName, err := p.createMeeting(token, "my topic")
 	require.NoError(t, err)
 	assert.Equal(t, "https://meet.google.com/abc-defg-hij", meetURL)
+	assert.Equal(t, "spaces/abc123", spaceName)
 }
 
 func TestCreateMeeting_InsufficientScopes(t *testing.T) {
@@ -84,7 +85,7 @@ func TestCreateMeeting_InsufficientScopes(t *testing.T) {
 		Expiry:      time.Now().Add(time.Hour),
 	}
 
-	_, err := p.createMeeting(token, "")
+	_, _, err := p.createMeeting(token, "")
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, ErrInsufficientScopes))
 }
@@ -112,7 +113,7 @@ func TestCreateMeeting_APIError(t *testing.T) {
 		Expiry:      time.Now().Add(time.Hour),
 	}
 
-	_, err := p.createMeeting(token, "")
+	_, _, err := p.createMeeting(token, "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "meet API returned status 500")
 }
@@ -141,7 +142,7 @@ func TestCreateMeeting_EmptyMeetingURI(t *testing.T) {
 		Expiry:      time.Now().Add(time.Hour),
 	}
 
-	_, err := p.createMeeting(token, "")
+	_, _, err := p.createMeeting(token, "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no meeting URI")
 }
@@ -169,7 +170,7 @@ func TestCreateMeeting_InvalidJSON(t *testing.T) {
 		Expiry:      time.Now().Add(time.Hour),
 	}
 
-	_, err := p.createMeeting(token, "")
+	_, _, err := p.createMeeting(token, "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "failed to parse Meet API response")
 }
@@ -396,4 +397,24 @@ func TestGetValidToken_RefreshesWithinBuffer(t *testing.T) {
 	require.NotNil(t, token)
 	assert.Equal(t, "new-access", token.AccessToken)
 	assert.Equal(t, "new-access", kv.tokens["user1"].AccessToken)
+}
+
+func TestExtractMeetingCode(t *testing.T) {
+	cases := []struct {
+		input string
+		want  string
+	}{
+		{"abc-mnop-xyz", "abc-mnop-xyz"},
+		{"https://meet.google.com/abc-mnop-xyz", "abc-mnop-xyz"},
+		{"https://meet.google.com/abc-mnop-xyz?authuser=0", "abc-mnop-xyz"},
+		{"https://meet.google.com/abc-mnop-xyz/", "abc-mnop-xyz"},
+		{"http://meet.google.com/abc-mnop-xyz", "abc-mnop-xyz"},
+		{"meet.google.com/abc-mnop-xyz", "abc-mnop-xyz"},
+		{"  abc-mnop-xyz  ", "abc-mnop-xyz"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.input, func(t *testing.T) {
+			assert.Equal(t, tc.want, extractMeetingCode(tc.input))
+		})
+	}
 }

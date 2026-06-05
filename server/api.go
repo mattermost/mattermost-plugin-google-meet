@@ -33,6 +33,11 @@ func (p *Plugin) initRouter() *mux.Router {
 	protectedRouter.HandleFunc("/meeting", p.handleCreateMeeting).Methods(http.MethodPost)
 	protectedRouter.HandleFunc("/config/status", p.handleConfigStatus).Methods(http.MethodGet)
 
+	// Admin-only debug routes
+	adminRouter := protectedRouter.PathPrefix("/admin").Subrouter()
+	adminRouter.Use(p.AdminAuthorizationRequired)
+	adminRouter.HandleFunc("/poll-now", p.handlePollNow).Methods(http.MethodPost)
+
 	return router
 }
 
@@ -50,6 +55,27 @@ func (p *Plugin) MattermostAuthorizationRequired(next http.Handler) http.Handler
 
 		next.ServeHTTP(w, r)
 	})
+}
+
+func (p *Plugin) AdminAuthorizationRequired(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		userID := r.Header.Get("Mattermost-User-ID")
+		isAdmin, err := p.IsUserAdmin(userID)
+		if err != nil || !isAdmin {
+			http.Error(w, "Forbidden", http.StatusForbidden)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (p *Plugin) handlePollNow(w http.ResponseWriter, _ *http.Request) {
+	if !p.getConfiguration().EnableConferenceArtifactPosts {
+		writeJSONResponse(w, http.StatusOK, map[string]string{"status": "feature_disabled"}, p.API)
+		return
+	}
+	go p.runPollCycle()
+	writeJSONResponse(w, http.StatusOK, map[string]string{"status": "poll triggered"}, p.API)
 }
 
 // handleError logs the internal error and sends a generic 500 JSON response.

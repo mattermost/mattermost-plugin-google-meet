@@ -1,0 +1,17 @@
+{
+    "google-meet.conference.started": "A new Google Meet conference has started.",
+    "google-meet.conference.space": "Space",
+    "google-meet.recording.available": "A recording is now available.",
+    "google-meet.recording.view": "View recording in Google Drive",
+    "google-meet.transcript.available": "A transcript is now available.",
+    "google-meet.transcript.view": "View transcript in Google Docs",
+    "google-meet.smartnote.available": "Smart notes are now available.",
+    "google-meet.smartnote.view": "View smart notes in Google Docs",
+    "google-meet.ai-summary.create": "Create meeting summary",
+    "google-meet.subscription.add.success": "This channel is now subscribed to the Google Meet space.",
+    "google-meet.subscription.remove.success": "Unsubscribed from the Google Meet space.",
+    "google-meet.subscription.list.empty": "You have no active Google Meet subscriptions.",
+    "google-meet.subscription.add.error": "Failed to subscribe to the Google Meet space.",
+    "google-meet.subscription.remove.error": "Failed to unsubscribe from the Google Meet space.",
+    "google-meet.subscription.list.error": "Failed to list subscriptions."
+}

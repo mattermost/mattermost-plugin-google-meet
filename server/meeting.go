@@ -6,10 +6,12 @@ package main
 import (
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/mattermost/mattermost/server/public/model"
 
 	"github.com/mattermost/mattermost-plugin-google-meet/server/command"
+	"github.com/mattermost/mattermost-plugin-google-meet/server/store/kvstore"
 )
 
 const websocketEventMeetingStarted = "meeting_started"
@@ -46,7 +48,7 @@ func (p *Plugin) StartMeeting(userID, channelID, topic, connectionID string) (st
 	}
 
 	p.API.LogDebug("StartMeeting: creating Google Meet meeting", "user_id", userID)
-	meetURL, err := p.createMeeting(token, topic)
+	meetURL, spaceName, err := p.createMeeting(token, topic)
 	if err != nil {
 		if errors.Is(err, ErrInsufficientScopes) {
 			// Token has old scopes — delete it so the user re-authenticates with the correct scope
@@ -78,9 +80,30 @@ func (p *Plugin) StartMeeting(userID, channelID, topic, connectionID string) (st
 		},
 	}
 
-	_, appErr := p.API.CreatePost(post)
+	createdPost, appErr := p.API.CreatePost(post)
 	if appErr != nil {
 		return "", fmt.Errorf("failed to create post: %w", appErr)
+	}
+
+	// Store an ad-hoc mapping so the polling loop can post recording / transcript /
+	// smart-note artifacts as replies to this post without an explicit subscription.
+	// Add to the index FIRST so a partial failure (index OK, entry missing) lands
+	// in pollAdHocMeetings' self-heal path which removes orphaned index entries.
+	// The reverse order would orphan a stored entry for its 24h TTL because
+	// the poller wouldn't know to look at it.
+	if spaceName != "" {
+		kvStore := p.getKVStore()
+		entry := &kvstore.AdHocMeetingPost{
+			RootPostID: createdPost.Id,
+			ChannelID:  channelID,
+			UserID:     userID,
+			CreatedAt:  time.Now().UTC(),
+		}
+		if storeErr := kvStore.AddToAdHocIndex(spaceName); storeErr != nil {
+			p.API.LogWarn("StartMeeting: failed to add to ad-hoc index", "space", spaceName, "error", storeErr.Error())
+		} else if storeErr := kvStore.StoreAdHocMeetingPost(spaceName, entry); storeErr != nil {
+			p.API.LogWarn("StartMeeting: failed to store ad-hoc meeting post", "space", spaceName, "error", storeErr.Error())
+		}
 	}
 
 	broadcast := &model.WebsocketBroadcast{UserId: userID}

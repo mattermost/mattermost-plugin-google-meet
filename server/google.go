@@ -21,8 +21,13 @@ var ErrInsufficientScopes = errors.New("insufficient authentication scopes")
 
 const (
 	googleAuthURL      = "https://accounts.google.com/o/oauth2/v2/auth"
-	meetScope          = "https://www.googleapis.com/auth/meetings.space.created"
 	tokenRefreshBuffer = 5 * time.Minute
+
+	// meetScopeCreated grants creating meeting spaces; sufficient for /meet start.
+	meetScopeCreated = "https://www.googleapis.com/auth/meetings.space.created"
+	// meetScopeReadonly grants reading conferenceRecords, recordings, transcripts, and smart notes.
+	// Only requested when conference artifact polling is enabled.
+	meetScopeReadonly = "https://www.googleapis.com/auth/meetings.space.readonly"
 )
 
 // These are vars so tests can override them with httptest servers.
@@ -58,11 +63,16 @@ func (p *Plugin) buildAuthURL(state string) string {
 		return ""
 	}
 
+	scope := meetScopeCreated
+	if config.EnableConferenceArtifactPosts {
+		scope += " " + meetScopeReadonly
+	}
+
 	params := url.Values{
 		"client_id":     {config.GoogleClientID},
 		"redirect_uri":  {redirectURI},
 		"response_type": {"code"},
-		"scope":         {meetScope},
+		"scope":         {scope},
 		"access_type":   {"offline"},
 		"prompt":        {"consent"},
 		"state":         {state},
@@ -204,25 +214,85 @@ func (p *Plugin) getValidToken(userID string) (*kvstore.OAuth2Token, error) {
 	return token, nil
 }
 
-type meetSpaceResponse struct {
+// meetSpaceResponse is kept as an alias so existing tests compile.
+type meetSpaceResponse = meetSpace
+
+type meetSpace struct {
 	Name        string `json:"name"`
 	MeetingURI  string `json:"meetingUri"`
 	MeetingCode string `json:"meetingCode"`
 }
 
-func (p *Plugin) createMeeting(token *kvstore.OAuth2Token, _ string) (string, error) {
+type conferenceRecord struct {
+	Name      string     `json:"name"`
+	StartTime *time.Time `json:"startTime,omitempty"`
+	EndTime   *time.Time `json:"endTime,omitempty"`
+	Space     string     `json:"space"` // resource name of the parent space, e.g. "spaces/abc123"
+}
+
+type driveDestination struct {
+	File      string `json:"file"`
+	ExportURI string `json:"exportUri"`
+}
+
+type docsDestination struct {
+	Document  string `json:"document"`
+	ExportURI string `json:"exportUri"`
+}
+
+type meetRecording struct {
+	Name             string            `json:"name"`
+	State            string            `json:"state"`
+	StartTime        *time.Time        `json:"startTime,omitempty"`
+	EndTime          *time.Time        `json:"endTime,omitempty"`
+	DriveDestination *driveDestination `json:"driveDestination,omitempty"`
+}
+
+type meetTranscript struct {
+	Name            string           `json:"name"`
+	State           string           `json:"state"`
+	StartTime       *time.Time       `json:"startTime,omitempty"`
+	EndTime         *time.Time       `json:"endTime,omitempty"`
+	DocsDestination *docsDestination `json:"docsDestination,omitempty"`
+}
+
+type meetSmartNote struct {
+	Name            string           `json:"name"`
+	State           string           `json:"state"`
+	StartTime       *time.Time       `json:"startTime,omitempty"`
+	EndTime         *time.Time       `json:"endTime,omitempty"`
+	DocsDestination *docsDestination `json:"docsDestination,omitempty"`
+}
+
+type transcriptEntry struct {
+	Name              string `json:"name"`
+	ParticipantDevice struct {
+		DisplayName string `json:"displayName"`
+	} `json:"participantDevice"`
+	Text      string    `json:"text"`
+	StartTime time.Time `json:"startTime"`
+	EndTime   time.Time `json:"endTime"`
+}
+
+// meetAPIState enumerates artifact lifecycle states used by the Meet API.
+const (
+	meetStateFileGenerated = "FILE_GENERATED"
+)
+
+// createMeeting creates a new Google Meet space and returns both the meeting URI and the stable space name.
+func (p *Plugin) createMeeting(token *kvstore.OAuth2Token, _ string) (meetingURI, spaceName string, err error) {
 	reqURL := googleMeetURL + "/spaces"
-	req, err := http.NewRequest(http.MethodPost, reqURL, strings.NewReader("{}"))
-	if err != nil {
-		return "", fmt.Errorf("failed to create request: %w", err)
+	req, reqErr := http.NewRequest(http.MethodPost, reqURL, strings.NewReader("{}"))
+	if reqErr != nil {
+		return "", "", fmt.Errorf("failed to create request: %w", reqErr)
 	}
 
 	req.Header.Set("Authorization", "Bearer "+token.AccessToken)
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("failed to create meeting space: %w", err)
+	resp, doErr := httpClient.Do(req)
+	if doErr != nil {
+		return "", "", fmt.Errorf("failed to create meeting space: %w", doErr)
 	}
 	defer func() {
 		if closeErr := resp.Body.Close(); closeErr != nil && p.API != nil {
@@ -230,27 +300,256 @@ func (p *Plugin) createMeeting(token *kvstore.OAuth2Token, _ string) (string, er
 		}
 	}()
 
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", fmt.Errorf("failed to read response: %w", err)
+	body, readErr := io.ReadAll(resp.Body)
+	if readErr != nil {
+		return "", "", fmt.Errorf("failed to read response: %w", readErr)
 	}
 
 	if resp.StatusCode == http.StatusForbidden && strings.Contains(string(body), "ACCESS_TOKEN_SCOPE_INSUFFICIENT") {
-		return "", ErrInsufficientScopes
+		return "", "", ErrInsufficientScopes
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("meet API returned status %d: %s", resp.StatusCode, string(body))
+		return "", "", fmt.Errorf("meet API returned status %d: %s", resp.StatusCode, string(body))
 	}
 
-	var space meetSpaceResponse
+	var space meetSpace
 	if err := json.Unmarshal(body, &space); err != nil {
-		return "", fmt.Errorf("failed to parse Meet API response: %w", err)
+		return "", "", fmt.Errorf("failed to parse Meet API response: %w", err)
 	}
 
 	if space.MeetingURI == "" {
-		return "", errors.New("no meeting URI in Meet API response")
+		return "", "", errors.New("no meeting URI in Meet API response")
 	}
 
-	return space.MeetingURI, nil
+	return space.MeetingURI, space.Name, nil
+}
+
+// doGet performs an authenticated GET against the Meet REST API and returns the raw body.
+func (p *Plugin) meetGet(token *kvstore.OAuth2Token, path string) ([]byte, error) {
+	req, err := http.NewRequest(http.MethodGet, googleMeetURL+path, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token.AccessToken)
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("request failed: %w", err)
+	}
+	defer func() {
+		if closeErr := resp.Body.Close(); closeErr != nil && p.API != nil {
+			p.API.LogWarn("Failed to close response body", "path", path, "error", closeErr.Error())
+		}
+	}()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read body: %w", err)
+	}
+
+	if resp.StatusCode == http.StatusForbidden && strings.Contains(string(body), "ACCESS_TOKEN_SCOPE_INSUFFICIENT") {
+		return nil, ErrInsufficientScopes
+	}
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, fmt.Errorf("resource not found: %s", path)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("meet API status %d for %s: %s", resp.StatusCode, path, string(body))
+	}
+
+	return body, nil
+}
+
+// getSpace resolves a meeting code or space ID to a Space resource.
+func (p *Plugin) getSpace(token *kvstore.OAuth2Token, meetingCodeOrID string) (*meetSpace, error) {
+	body, err := p.meetGet(token, "/spaces/"+url.PathEscape(meetingCodeOrID))
+	if err != nil {
+		return nil, err
+	}
+	var space meetSpace
+	if err := json.Unmarshal(body, &space); err != nil {
+		return nil, fmt.Errorf("failed to parse space response: %w", err)
+	}
+	return &space, nil
+}
+
+// listConferenceRecords returns conference records for the given space that started strictly after `since`.
+// The filter is pushed to the API (start_time>=) to avoid fetching full history, and re-checked
+// client-side with strict-after because our watermark semantics require excluding the equal timestamp.
+func (p *Plugin) listConferenceRecords(token *kvstore.OAuth2Token, spaceName string, since time.Time) ([]conferenceRecord, error) {
+	filterParts := []string{fmt.Sprintf(`space.name="%s"`, spaceName)}
+	if !since.IsZero() {
+		filterParts = append(filterParts, fmt.Sprintf(`start_time>="%s"`, since.UTC().Format(time.RFC3339Nano)))
+	}
+	filter := strings.Join(filterParts, " AND ")
+	basePath := "/conferenceRecords?" + url.Values{"filter": {filter}}.Encode()
+	all, err := p.listConferenceRecordsPaged(token, basePath)
+	if err != nil {
+		return nil, err
+	}
+	if since.IsZero() {
+		return all, nil
+	}
+	filtered := all[:0]
+	for _, r := range all {
+		if r.StartTime != nil && r.StartTime.After(since) {
+			filtered = append(filtered, r)
+		}
+	}
+	return filtered, nil
+}
+
+func (p *Plugin) listConferenceRecordsPaged(token *kvstore.OAuth2Token, basePath string) ([]conferenceRecord, error) {
+	type listResp struct {
+		ConferenceRecords []conferenceRecord `json:"conferenceRecords"`
+		NextPageToken     string             `json:"nextPageToken"`
+	}
+
+	var all []conferenceRecord
+	pageToken := ""
+	for {
+		path := basePath
+		if pageToken != "" {
+			path += "&pageToken=" + url.QueryEscape(pageToken)
+		}
+		body, err := p.meetGet(token, path)
+		if err != nil {
+			return nil, err
+		}
+		var resp listResp
+		if err := json.Unmarshal(body, &resp); err != nil {
+			return nil, fmt.Errorf("failed to parse conference records: %w", err)
+		}
+		all = append(all, resp.ConferenceRecords...)
+		if resp.NextPageToken == "" {
+			break
+		}
+		pageToken = resp.NextPageToken
+	}
+	return all, nil
+}
+
+// listRecordings returns all recordings for the given conference record that have reached FILE_GENERATED.
+func (p *Plugin) listRecordings(token *kvstore.OAuth2Token, conferenceRecordName string) ([]meetRecording, error) {
+	type listResp struct {
+		Recordings    []meetRecording `json:"recordings"`
+		NextPageToken string          `json:"nextPageToken"`
+	}
+
+	var all []meetRecording
+	pageToken := ""
+	for {
+		path := "/" + conferenceRecordName + "/recordings"
+		if pageToken != "" {
+			path += "?pageToken=" + url.QueryEscape(pageToken)
+		}
+		body, err := p.meetGet(token, path)
+		if err != nil {
+			return nil, err
+		}
+		var resp listResp
+		if err := json.Unmarshal(body, &resp); err != nil {
+			return nil, fmt.Errorf("failed to parse recordings: %w", err)
+		}
+		all = append(all, resp.Recordings...)
+		if resp.NextPageToken == "" {
+			break
+		}
+		pageToken = resp.NextPageToken
+	}
+	return all, nil
+}
+
+// listTranscripts returns all transcripts for the given conference record.
+func (p *Plugin) listTranscripts(token *kvstore.OAuth2Token, conferenceRecordName string) ([]meetTranscript, error) {
+	type listResp struct {
+		Transcripts   []meetTranscript `json:"transcripts"`
+		NextPageToken string           `json:"nextPageToken"`
+	}
+
+	var all []meetTranscript
+	pageToken := ""
+	for {
+		path := "/" + conferenceRecordName + "/transcripts"
+		if pageToken != "" {
+			path += "?pageToken=" + url.QueryEscape(pageToken)
+		}
+		body, err := p.meetGet(token, path)
+		if err != nil {
+			return nil, err
+		}
+		var resp listResp
+		if err := json.Unmarshal(body, &resp); err != nil {
+			return nil, fmt.Errorf("failed to parse transcripts: %w", err)
+		}
+		all = append(all, resp.Transcripts...)
+		if resp.NextPageToken == "" {
+			break
+		}
+		pageToken = resp.NextPageToken
+	}
+	return all, nil
+}
+
+// listSmartNotes returns all smart notes for the given conference record.
+func (p *Plugin) listSmartNotes(token *kvstore.OAuth2Token, conferenceRecordName string) ([]meetSmartNote, error) {
+	type listResp struct {
+		SmartNotes    []meetSmartNote `json:"smartNotes"`
+		NextPageToken string          `json:"nextPageToken"`
+	}
+
+	var all []meetSmartNote
+	pageToken := ""
+	for {
+		path := "/" + conferenceRecordName + "/smartNotes"
+		if pageToken != "" {
+			path += "?pageToken=" + url.QueryEscape(pageToken)
+		}
+		body, err := p.meetGet(token, path)
+		if err != nil {
+			return nil, err
+		}
+		var resp listResp
+		if err := json.Unmarshal(body, &resp); err != nil {
+			return nil, fmt.Errorf("failed to parse smart notes: %w", err)
+		}
+		all = append(all, resp.SmartNotes...)
+		if resp.NextPageToken == "" {
+			break
+		}
+		pageToken = resp.NextPageToken
+	}
+	return all, nil
+}
+
+// listTranscriptEntries returns all transcript entries for the given transcript resource name.
+func (p *Plugin) listTranscriptEntries(token *kvstore.OAuth2Token, transcriptName string) ([]transcriptEntry, error) {
+	type listResp struct {
+		TranscriptEntries []transcriptEntry `json:"transcriptEntries"`
+		NextPageToken     string            `json:"nextPageToken"`
+	}
+
+	var all []transcriptEntry
+	pageToken := ""
+	for {
+		path := "/" + transcriptName + "/entries"
+		if pageToken != "" {
+			path += "?pageToken=" + url.QueryEscape(pageToken)
+		}
+		body, err := p.meetGet(token, path)
+		if err != nil {
+			return nil, err
+		}
+		var resp listResp
+		if err := json.Unmarshal(body, &resp); err != nil {
+			return nil, fmt.Errorf("failed to parse transcript entries: %w", err)
+		}
+		all = append(all, resp.TranscriptEntries...)
+		if resp.NextPageToken == "" {
+			break
+		}
+		pageToken = resp.NextPageToken
+	}
+	return all, nil
 }

@@ -50,6 +50,20 @@
                 "type": "bool",
                 "help_text": "Restrict users from creating meetings in public channels.",
                 "default": false
+            },
+            {
+                "key": "EnableConferenceArtifactPosts",
+                "display_name": "Post Recordings, Transcripts and Smart Notes",
+                "type": "bool",
+                "help_text": "When enabled, recordings, transcripts, and smart notes from subscribed meetings are automatically posted to the channel as replies.",
+                "default": true
+            },
+            {
+                "key": "PollIntervalSeconds",
+                "display_name": "Polling Interval (seconds)",
+                "type": "number",
+                "help_text": "How often (in seconds) the plugin polls the Google Meet API for new recordings and transcripts. Minimum 30 seconds. Default 60.",
+                "default": 60
             }
         ]
     }

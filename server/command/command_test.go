@@ -8,26 +8,62 @@ import (
 	"testing"
 
 	"github.com/mattermost/mattermost/server/public/model"
+	"github.com/mattermost/mattermost/server/public/plugin"
+	"github.com/mattermost/mattermost/server/public/pluginapi"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/mattermost/mattermost-plugin-google-meet/server/store/kvstore"
 )
 
+type minimalAPI struct {
+	plugin.API
+	ch              *model.Channel
+	chErr           *model.AppError
+	channelPermDeny bool
+}
+
+func (m *minimalAPI) GetChannel(channelID string) (*model.Channel, *model.AppError) {
+	if m.ch != nil || m.chErr != nil {
+		return m.ch, m.chErr
+	}
+	return &model.Channel{Id: channelID, Type: model.ChannelTypeOpen}, nil
+}
+
+func (m *minimalAPI) HasPermissionToChannel(_, _ string, _ *model.Permission) bool {
+	return !m.channelPermDeny
+}
+func (m *minimalAPI) LogError(string, ...any) {}
+func (m *minimalAPI) LogWarn(string, ...any)  {}
+func (m *minimalAPI) LogInfo(string, ...any)  {}
+func (m *minimalAPI) LogDebug(string, ...any) {}
+
+func permissiveClient() *pluginapi.Client {
+	return pluginapi.NewClient(&minimalAPI{}, nil)
+}
+
 type mockMeetingStarter struct {
-	configured     bool
-	connected      bool
-	isAdmin        bool
-	connectURL     string
-	configureURL   string
-	startErr       error
-	connectedErr   error
-	adminErr       error
-	disconnectErr  error
-	disconnectedID string
-	startedMeeting struct {
+	configured            bool
+	connected             bool
+	isAdmin               bool
+	subscriptionsDisabled bool
+	connectURL            string
+	configureURL          string
+	startErr              error
+	connectedErr          error
+	adminErr              error
+	disconnectErr         error
+	disconnectedID        string
+	startedMeeting        struct {
 		userID    string
 		channelID string
 		topic     string
 	}
+	addSubErr      error
+	addedSub       *kvstore.Subscription
+	removeSubErr   error
+	listSubsResult []*SubscriptionInfo
+	listSubsErr    error
 }
 
 func (m *mockMeetingStarter) StartMeeting(userID, channelID, topic, _ string) (string, error) {
@@ -51,6 +87,20 @@ func (m *mockMeetingStarter) IsUserConnected(_ string) (bool, error) {
 
 func (m *mockMeetingStarter) IsUserAdmin(_ string) (bool, error) {
 	return m.isAdmin, m.adminErr
+}
+
+func (m *mockMeetingStarter) AreSubscriptionsEnabled() bool { return !m.subscriptionsDisabled }
+
+func (m *mockMeetingStarter) AddSubscription(_, _, _, _ string) (*kvstore.Subscription, error) {
+	return m.addedSub, m.addSubErr
+}
+
+func (m *mockMeetingStarter) RemoveSubscription(_, _, _ string) error {
+	return m.removeSubErr
+}
+
+func (m *mockMeetingStarter) ListSubscriptions(_ string) ([]*SubscriptionInfo, error) {
+	return m.listSubsResult, m.listSubsErr
 }
 
 func TestHandle_UnknownCommand(t *testing.T) {
@@ -328,4 +378,254 @@ func TestExecuteMeetCommand_StartMeetingError(t *testing.T) {
 	assert.Contains(t, resp.Text, "Failed to create meeting")
 	// Must NOT contain the internal error message
 	assert.NotContains(t, resp.Text, "some internal error")
+}
+
+func TestSubscriptionCommand_NotConnected(t *testing.T) {
+	mock := &mockMeetingStarter{
+		configured: true,
+		connected:  false,
+		connectURL: "http://localhost/connect",
+	}
+	handler := &Handler{meetingStarter: mock, client: permissiveClient()}
+
+	resp, err := handler.Handle(&model.CommandArgs{
+		Command:   "/meet subscription add abc-mnop-xyz",
+		UserId:    "user1",
+		ChannelId: "chan1",
+	})
+	require.NoError(t, err)
+	assert.Contains(t, resp.Text, "connect your Google account")
+}
+
+func TestSubscriptionCommand_FeatureDisabled(t *testing.T) {
+	mock := &mockMeetingStarter{
+		configured:            true,
+		connected:             true,
+		subscriptionsDisabled: true,
+	}
+	handler := &Handler{meetingStarter: mock}
+
+	resp, err := handler.Handle(&model.CommandArgs{
+		Command:   "/meet subscription add abc-mnop-xyz",
+		UserId:    "user1",
+		ChannelId: "chan1",
+	})
+	require.NoError(t, err)
+	assert.Contains(t, resp.Text, "subscriptions are disabled")
+}
+
+func TestSubscriptionCommand_PermissionDenied(t *testing.T) {
+	for _, sub := range []string{"add abc-mnop-xyz", "remove abc-mnop-xyz", "list"} {
+		t.Run(sub, func(t *testing.T) {
+			mock := &mockMeetingStarter{
+				configured: true,
+				connected:  false,
+				connectURL: "http://localhost/connect",
+			}
+			api := &minimalAPI{channelPermDeny: true}
+			handler := &Handler{
+				meetingStarter: mock,
+				client:         pluginapi.NewClient(api, nil),
+			}
+
+			resp, err := handler.Handle(&model.CommandArgs{
+				Command:   "/meet subscription " + sub,
+				UserId:    "regular-user",
+				ChannelId: "chan1",
+			})
+			require.NoError(t, err)
+			assert.Contains(t, resp.Text, "channel admin or system admin")
+			assert.NotContains(t, resp.Text, "connect your Google account", "must not leak the connect prompt to non-admins")
+		})
+	}
+}
+
+func TestSubscriptionCommand_NoSubcommand(t *testing.T) {
+	mock := &mockMeetingStarter{configured: true, connected: true}
+	handler := &Handler{meetingStarter: mock, client: permissiveClient()}
+
+	resp, err := handler.Handle(&model.CommandArgs{
+		Command:   "/meet subscription",
+		UserId:    "user1",
+		ChannelId: "chan1",
+	})
+	require.NoError(t, err)
+	assert.Contains(t, resp.Text, "Usage:")
+}
+
+func TestSubscriptionCommand_Add_Success(t *testing.T) {
+	mock := &mockMeetingStarter{
+		configured: true,
+		connected:  true,
+		addedSub: &kvstore.Subscription{
+			MeetingCode: "abc-mnop-xyz",
+			SpaceID:     "spaces/abc123",
+		},
+	}
+	handler := &Handler{meetingStarter: mock, client: permissiveClient()}
+
+	resp, err := handler.Handle(&model.CommandArgs{
+		Command:   "/meet subscription add abc-mnop-xyz",
+		UserId:    "user1",
+		ChannelId: "chan1",
+	})
+	require.NoError(t, err)
+	assert.Contains(t, resp.Text, "subscribed")
+	assert.Contains(t, resp.Text, "abc-mnop-xyz")
+}
+
+func TestSubscriptionCommand_Add_MissingArg(t *testing.T) {
+	mock := &mockMeetingStarter{configured: true, connected: true}
+	handler := &Handler{meetingStarter: mock, client: permissiveClient()}
+
+	resp, err := handler.Handle(&model.CommandArgs{
+		Command:   "/meet subscription add",
+		UserId:    "user1",
+		ChannelId: "chan1",
+	})
+	require.NoError(t, err)
+	assert.Contains(t, resp.Text, "Usage:")
+}
+
+func TestSubscriptionCommand_Add_NeedsReconnect(t *testing.T) {
+	mock := &mockMeetingStarter{
+		configured: true,
+		connected:  true,
+		addSubErr:  ErrNeedsReconnect,
+		connectURL: "http://localhost/connect",
+	}
+	handler := &Handler{meetingStarter: mock, client: permissiveClient()}
+
+	resp, err := handler.Handle(&model.CommandArgs{
+		Command:   "/meet subscription add abc-mnop-xyz",
+		UserId:    "user1",
+		ChannelId: "chan1",
+	})
+	require.NoError(t, err)
+	assert.Contains(t, resp.Text, "reconnected")
+}
+
+func TestSubscriptionCommand_Remove_Success(t *testing.T) {
+	mock := &mockMeetingStarter{configured: true, connected: true}
+	handler := &Handler{meetingStarter: mock, client: permissiveClient()}
+
+	resp, err := handler.Handle(&model.CommandArgs{
+		Command:   "/meet subscription remove abc-mnop-xyz",
+		UserId:    "user1",
+		ChannelId: "chan1",
+	})
+	require.NoError(t, err)
+	assert.Contains(t, resp.Text, "Unsubscribed")
+}
+
+func TestSubscriptionCommand_List_Empty(t *testing.T) {
+	mock := &mockMeetingStarter{
+		configured:     true,
+		connected:      true,
+		listSubsResult: nil,
+	}
+	handler := &Handler{meetingStarter: mock, client: permissiveClient()}
+
+	resp, err := handler.Handle(&model.CommandArgs{
+		Command:   "/meet subscription list",
+		UserId:    "user1",
+		ChannelId: "chan1",
+	})
+	require.NoError(t, err)
+	assert.Contains(t, resp.Text, "no active")
+}
+
+func TestSubscriptionCommand_List_WithEntries(t *testing.T) {
+	mock := &mockMeetingStarter{
+		configured: true,
+		connected:  true,
+		listSubsResult: []*SubscriptionInfo{
+			{MeetingCode: "abc-mnop-xyz", ChannelID: "chan1", ChannelName: "town-square", Description: "Weekly Standup"},
+		},
+	}
+	handler := &Handler{meetingStarter: mock, client: permissiveClient()}
+
+	resp, err := handler.Handle(&model.CommandArgs{
+		Command:   "/meet subscription list",
+		UserId:    "user1",
+		ChannelId: "chan1",
+	})
+	require.NoError(t, err)
+	assert.Contains(t, resp.Text, "abc-mnop-xyz")
+	assert.Contains(t, resp.Text, "meet.google.com/abc-mnop-xyz")
+	assert.Contains(t, resp.Text, "town-square")
+	assert.Contains(t, resp.Text, "Weekly Standup")
+	// Verify markdown table header is present.
+	assert.Contains(t, resp.Text, "| Meeting |")
+}
+
+func TestSubscriptionCommand_UnknownSubcommand(t *testing.T) {
+	mock := &mockMeetingStarter{configured: true, connected: true}
+	handler := &Handler{meetingStarter: mock, client: permissiveClient()}
+
+	resp, err := handler.Handle(&model.CommandArgs{
+		Command:   "/meet subscription foo",
+		UserId:    "user1",
+		ChannelId: "chan1",
+	})
+	require.NoError(t, err)
+	assert.Contains(t, resp.Text, "Unknown subscription subcommand")
+}
+
+func TestSubscriptionCommand_Add_RejectedInDM(t *testing.T) {
+	mock := &mockMeetingStarter{configured: true, connected: true}
+	api := &minimalAPI{ch: &model.Channel{Type: model.ChannelTypeDirect}}
+	handler := &Handler{
+		meetingStarter: mock,
+		client:         pluginapi.NewClient(api, nil),
+	}
+
+	resp, err := handler.Handle(&model.CommandArgs{
+		Command:   "/meet subscription add abc-mnop-xyz",
+		UserId:    "user1",
+		ChannelId: "dm1",
+	})
+	require.NoError(t, err)
+	assert.Contains(t, resp.Text, "direct messages")
+	// AddSubscription should never have been called.
+	assert.Nil(t, mock.addedSub)
+}
+
+func TestSubscriptionCommand_Add_RejectedInGroupChat(t *testing.T) {
+	mock := &mockMeetingStarter{configured: true, connected: true}
+	api := &minimalAPI{ch: &model.Channel{Type: model.ChannelTypeGroup}}
+	handler := &Handler{
+		meetingStarter: mock,
+		client:         pluginapi.NewClient(api, nil),
+	}
+
+	resp, err := handler.Handle(&model.CommandArgs{
+		Command:   "/meet subscription add abc-mnop-xyz",
+		UserId:    "user1",
+		ChannelId: "gm1",
+	})
+	require.NoError(t, err)
+	assert.Contains(t, resp.Text, "group chats")
+	assert.Nil(t, mock.addedSub)
+}
+
+func TestSubscriptionCommand_Add_AllowedInPrivateChannel(t *testing.T) {
+	mock := &mockMeetingStarter{
+		configured: true,
+		connected:  true,
+		addedSub:   &kvstore.Subscription{MeetingCode: "abc-mnop-xyz"},
+	}
+	api := &minimalAPI{ch: &model.Channel{Type: model.ChannelTypePrivate}}
+	handler := &Handler{
+		meetingStarter: mock,
+		client:         pluginapi.NewClient(api, nil),
+	}
+
+	resp, err := handler.Handle(&model.CommandArgs{
+		Command:   "/meet subscription add abc-mnop-xyz",
+		UserId:    "user1",
+		ChannelId: "priv1",
+	})
+	require.NoError(t, err)
+	assert.Contains(t, resp.Text, "subscribed")
 }

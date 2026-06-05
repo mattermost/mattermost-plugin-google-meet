@@ -29,8 +29,9 @@ type Plugin struct {
 
 	commandClient command.Command
 
-	router *mux.Router
-	botID  string
+	router     *mux.Router
+	botID      string
+	pollerStop chan struct{}
 
 	configurationLock sync.RWMutex
 	configuration     *configuration
@@ -61,6 +62,11 @@ func (p *Plugin) OnActivate() error {
 
 	p.router = p.initRouter()
 
+	return nil
+}
+
+func (p *Plugin) OnDeactivate() error {
+	p.stopPoller()
 	return nil
 }
 

@@ -10,9 +10,22 @@ import (
 
 	"github.com/mattermost/mattermost/server/public/model"
 	"github.com/mattermost/mattermost/server/public/pluginapi"
+	expcommand "github.com/mattermost/mattermost/server/public/pluginapi/experimental/command"
+
+	"github.com/mattermost/mattermost-plugin-google-meet/server/store/kvstore"
 )
 
-// MeetingStarter is the interface the command handler uses to start meetings.
+const autocompleteIconPath = "assets/icon.svg"
+
+// SubscriptionInfo holds display info about a subscription for /meet subscription list.
+type SubscriptionInfo struct {
+	MeetingCode string
+	ChannelID   string
+	ChannelName string // human-readable channel name, falls back to ChannelID if unavailable
+	Description string
+}
+
+// MeetingStarter is the interface the command handler uses to start meetings and manage subscriptions.
 type MeetingStarter interface {
 	StartMeeting(userID, channelID, topic, connectionID string) (string, error)
 	GetConnectURL() string
@@ -21,6 +34,14 @@ type MeetingStarter interface {
 	IsPluginConfigured() bool
 	IsUserAdmin(userID string) (bool, error)
 	GetPluginConfigureURL() string
+	// AreSubscriptionsEnabled reports whether the conference polling/artifact features
+	// are turned on. When false, /meet subscription commands are refused because the
+	// readonly OAuth scope they rely on is not requested at connect time.
+	AreSubscriptionsEnabled() bool
+	// Subscription methods
+	AddSubscription(userID, channelID, meetingCodeOrURL, description string) (*kvstore.Subscription, error)
+	RemoveSubscription(userID, channelID, meetingCodeOrURL string) error
+	ListSubscriptions(userID string) ([]*SubscriptionInfo, error)
 }
 
 type Handler struct {
@@ -41,12 +62,24 @@ func NewCommandHandler(client *pluginapi.Client, meetingStarter MeetingStarter) 
 	autocompleteData.AddCommand(model.NewAutocompleteData("disconnect", "", "Disconnect your Google account"))
 	autocompleteData.AddCommand(model.NewAutocompleteData("help", "", "Show Google Meet command help"))
 
+	subCmd := model.NewAutocompleteData("subscription", "", "Manage channel subscriptions to Google Meet spaces")
+	subCmd.AddCommand(model.NewAutocompleteData("add", "<meeting-code-or-URL> [description]", "Subscribe this channel to a Google Meet space"))
+	subCmd.AddCommand(model.NewAutocompleteData("remove", "<meeting-code-or-URL>", "Unsubscribe this channel from a Google Meet space"))
+	subCmd.AddCommand(model.NewAutocompleteData("list", "", "List your active subscriptions"))
+	autocompleteData.AddCommand(subCmd)
+
+	iconData, iconErr := expcommand.GetIconData(&client.System, autocompleteIconPath)
+	if iconErr != nil {
+		client.Log.Warn("Failed to load slash command icon", "error", iconErr.Error())
+	}
+
 	err := client.SlashCommand.Register(&model.Command{
-		Trigger:          meetCommandTrigger,
-		AutoComplete:     true,
-		AutoCompleteDesc: "Google Meet commands",
-		AutoCompleteHint: "help | start [topic] | connect | disconnect",
-		AutocompleteData: autocompleteData,
+		Trigger:              meetCommandTrigger,
+		AutoComplete:         true,
+		AutoCompleteDesc:     "Google Meet commands",
+		AutoCompleteHint:     "help | start [topic] | connect | disconnect",
+		AutocompleteData:     autocompleteData,
+		AutocompleteIconData: iconData,
 	})
 	if err != nil {
 		client.Log.Error("Failed to register command", "error", err)
@@ -80,6 +113,8 @@ func (c *Handler) Handle(args *model.CommandArgs) (*model.CommandResponse, error
 			return c.executeMeetConnectCommand(args), nil
 		case "disconnect":
 			return c.executeMeetDisconnectCommand(args), nil
+		case "subscription":
+			return c.executeSubscriptionCommand(args, fields[2:]), nil
 		default:
 			return c.executeMeetHelpCommand(), nil
 		}
@@ -99,40 +134,173 @@ func (c *Handler) executeMeetHelpCommand() *model.CommandResponse {
 			"- `/meet start [topic]` starts a meeting with an optional topic.",
 			"- `/meet connect` opens the Google account connection flow.",
 			"- `/meet disconnect` removes your saved Google connection.",
+			"- `/meet subscription add <meeting-code-or-URL> [description]` subscribes this channel to a meeting space.",
+			"- `/meet subscription remove <meeting-code-or-URL>` unsubscribes this channel from a meeting space.",
+			"- `/meet subscription list` lists your active subscriptions.",
 			"- `/meet help` shows this help message.",
 		}, "\n"),
 	}
 }
 
-func (c *Handler) pluginNotConfiguredResponse(userID string) *model.CommandResponse {
-	if !c.meetingStarter.IsPluginConfigured() {
-		isAdmin, err := c.meetingStarter.IsUserAdmin(userID)
-		if err != nil {
-			return &model.CommandResponse{
-				ResponseType: model.CommandResponseTypeEphemeral,
-				Text:         "Failed to check permissions. Please try again.",
-			}
+func (c *Handler) ephemeral(text string) *model.CommandResponse {
+	return &model.CommandResponse{
+		ResponseType: model.CommandResponseTypeEphemeral,
+		Text:         text,
+	}
+}
+
+func (c *Handler) needsConnectResponse() *model.CommandResponse {
+	connectURL := c.meetingStarter.GetConnectURL()
+	text := "You need to connect your Google account first. Run `/meet connect` to get started."
+	if connectURL != "" {
+		text = fmt.Sprintf("You need to connect your Google account first. [Click here to connect](%s).", connectURL)
+	}
+	return c.ephemeral(text)
+}
+
+func (c *Handler) needsReconnectResponse() *model.CommandResponse {
+	connectURL := c.meetingStarter.GetConnectURL()
+	text := "Your Google account needs to be reconnected. Run `/meet connect` to reconnect."
+	if connectURL != "" {
+		text = fmt.Sprintf("Your Google account needs to be reconnected. [Click here to reconnect](%s).", connectURL)
+	}
+	return c.ephemeral(text)
+}
+
+func (c *Handler) requireConnected(userID string) *model.CommandResponse {
+	connected, err := c.meetingStarter.IsUserConnected(userID)
+	if err != nil {
+		return c.ephemeral("Failed to check Google connection status. Please try again.")
+	}
+	if !connected {
+		return c.needsConnectResponse()
+	}
+	return nil
+}
+
+func (c *Handler) executeSubscriptionCommand(args *model.CommandArgs, subFields []string) *model.CommandResponse {
+	if resp := c.pluginNotConfiguredResponse(args.UserId); resp != nil {
+		return resp
+	}
+
+	if !c.meetingStarter.AreSubscriptionsEnabled() {
+		return c.ephemeral("Channel subscriptions are disabled. Ask your system administrator to enable **Post Recordings, Transcripts and Smart Notes** in the plugin settings.")
+	}
+
+	if c.client == nil || !c.client.User.HasPermissionToChannel(args.UserId, args.ChannelId, model.PermissionManageChannelRoles) {
+		return c.ephemeral("Managing Google Meet subscriptions requires channel admin or system admin permissions. Please ask a channel or system administrator to run this command for you.")
+	}
+
+	if resp := c.requireConnected(args.UserId); resp != nil {
+		return resp
+	}
+
+	if len(subFields) == 0 {
+		return c.ephemeral("Usage: `/meet subscription add <meeting-code>`, `/meet subscription remove <meeting-code>`, or `/meet subscription list`.")
+	}
+
+	switch subFields[0] {
+	case "add":
+		if len(subFields) < 2 {
+			return c.ephemeral("Usage: `/meet subscription add <meeting-code-or-URL> [description]`.")
 		}
-		if isAdmin {
-			configURL := c.meetingStarter.GetPluginConfigureURL()
-			if configURL == "" {
-				return &model.CommandResponse{
-					ResponseType: model.CommandResponseTypeEphemeral,
-					Text:         "The Google Meet plugin is not configured. Mattermost Site URL must be configured before the System Console link is available.",
-				}
-			}
-			return &model.CommandResponse{
-				ResponseType: model.CommandResponseTypeEphemeral,
-				Text:         fmt.Sprintf("The Google Meet plugin is not configured. [Configure it in the System Console](%s).", configURL),
-			}
+		description := strings.Join(subFields[2:], " ")
+		return c.executeSubscriptionAdd(args, subFields[1], description)
+	case "remove":
+		if len(subFields) < 2 {
+			return c.ephemeral("Usage: `/meet subscription remove <meeting-code-or-URL>`.")
 		}
-		return &model.CommandResponse{
-			ResponseType: model.CommandResponseTypeEphemeral,
-			Text:         "The Google Meet plugin is not configured. Please contact your system administrator.",
+		return c.executeSubscriptionRemove(args, subFields[1])
+	case "list":
+		return c.executeSubscriptionList(args)
+	default:
+		return c.ephemeral(fmt.Sprintf("Unknown subscription subcommand: %s. Use `add`, `remove`, or `list`.", subFields[0]))
+	}
+}
+
+func (c *Handler) executeSubscriptionAdd(args *model.CommandArgs, meetingInput, description string) *model.CommandResponse {
+	if c.client != nil {
+		ch, chErr := c.client.Channel.Get(args.ChannelId)
+		if chErr != nil {
+			return c.ephemeral("Failed to check channel type. Please try again.")
+		}
+		if ch.Type == model.ChannelTypeDirect || ch.Type == model.ChannelTypeGroup {
+			return c.ephemeral("Subscriptions can only be added to public or private channels, not direct messages or group chats.")
 		}
 	}
 
-	return nil
+	sub, err := c.meetingStarter.AddSubscription(args.UserId, args.ChannelId, meetingInput, description)
+	if err != nil {
+		if errors.Is(err, ErrNeedsReconnect) {
+			return c.needsReconnectResponse()
+		}
+		if c.client != nil {
+			c.client.Log.Error("Failed to add subscription", "user_id", args.UserId, "error", err.Error())
+		}
+		return c.ephemeral(fmt.Sprintf("Failed to subscribe: %s", err.Error()))
+	}
+	return c.ephemeral(fmt.Sprintf(
+		"This channel is now subscribed to Google Meet space **%s**. Recordings, transcripts, and smart notes will be posted here after each meeting.",
+		sub.MeetingCode,
+	))
+}
+
+func (c *Handler) executeSubscriptionRemove(args *model.CommandArgs, meetingInput string) *model.CommandResponse {
+	if err := c.meetingStarter.RemoveSubscription(args.UserId, args.ChannelId, meetingInput); err != nil {
+		if errors.Is(err, ErrNeedsReconnect) {
+			return c.needsReconnectResponse()
+		}
+		return c.ephemeral(fmt.Sprintf("Failed to remove subscription: %s", err.Error()))
+	}
+	return c.ephemeral(fmt.Sprintf("Unsubscribed from **%s**.", meetingInput))
+}
+
+func (c *Handler) executeSubscriptionList(args *model.CommandArgs) *model.CommandResponse {
+	subs, err := c.meetingStarter.ListSubscriptions(args.UserId)
+	if err != nil {
+		return c.ephemeral("Failed to list subscriptions. Please try again.")
+	}
+	if len(subs) == 0 {
+		return c.ephemeral("You have no active Google Meet subscriptions. Use `/meet subscription add <meeting-code>` to subscribe.")
+	}
+
+	lines := []string{
+		"Your active Google Meet subscriptions:",
+		"",
+		"| Meeting | Channel | Description |",
+		"|:--------|:--------|:------------|",
+	}
+	for _, sub := range subs {
+		channelRef := sub.ChannelName
+		if channelRef == "" {
+			channelRef = sub.ChannelID
+		}
+		lines = append(lines, fmt.Sprintf(
+			"| [%s](https://meet.google.com/%s) | ~%s | %s |",
+			sub.MeetingCode, sub.MeetingCode, channelRef, sub.Description,
+		))
+	}
+	return c.ephemeral(strings.Join(lines, "\n"))
+}
+
+func (c *Handler) pluginNotConfiguredResponse(userID string) *model.CommandResponse {
+	if c.meetingStarter.IsPluginConfigured() {
+		return nil
+	}
+
+	isAdmin, err := c.meetingStarter.IsUserAdmin(userID)
+	if err != nil {
+		return c.ephemeral("Failed to check permissions. Please try again.")
+	}
+	if !isAdmin {
+		return c.ephemeral("The Google Meet plugin is not configured. Please contact your system administrator.")
+	}
+
+	configURL := c.meetingStarter.GetPluginConfigureURL()
+	if configURL == "" {
+		return c.ephemeral("The Google Meet plugin is not configured. Mattermost Site URL must be configured before the System Console link is available.")
+	}
+	return c.ephemeral(fmt.Sprintf("The Google Meet plugin is not configured. [Configure it in the System Console](%s).", configURL))
 }
 
 func (c *Handler) executeMeetConnectCommand(args *model.CommandArgs) *model.CommandResponse {
@@ -142,86 +310,41 @@ func (c *Handler) executeMeetConnectCommand(args *model.CommandArgs) *model.Comm
 
 	connectURL := c.meetingStarter.GetConnectURL()
 	if connectURL == "" {
-		return &model.CommandResponse{
-			ResponseType: model.CommandResponseTypeEphemeral,
-			Text:         "The Google account connection link is unavailable. Please contact your system administrator.",
-		}
+		return c.ephemeral("The Google account connection link is unavailable. Please contact your system administrator.")
 	}
 
-	return &model.CommandResponse{
-		ResponseType: model.CommandResponseTypeEphemeral,
-		Text:         fmt.Sprintf("Connect or reconnect your Google account. [Click here to continue](%s).", connectURL),
-	}
+	return c.ephemeral(fmt.Sprintf("Connect or reconnect your Google account. [Click here to continue](%s).", connectURL))
 }
 
 func (c *Handler) executeMeetDisconnectCommand(args *model.CommandArgs) *model.CommandResponse {
 	if err := c.meetingStarter.DisconnectUser(args.UserId); err != nil {
-		return &model.CommandResponse{
-			ResponseType: model.CommandResponseTypeEphemeral,
-			Text:         "Failed to disconnect your Google account. Please try again.",
-		}
+		return c.ephemeral("Failed to disconnect your Google account. Please try again.")
 	}
-
-	return &model.CommandResponse{
-		ResponseType: model.CommandResponseTypeEphemeral,
-		Text:         "Your Google account has been disconnected.",
-	}
+	return c.ephemeral("Your Google account has been disconnected.")
 }
 
 func (c *Handler) executeMeetStartCommand(args *model.CommandArgs, topicFields []string) *model.CommandResponse {
 	if resp := c.pluginNotConfiguredResponse(args.UserId); resp != nil {
 		return resp
 	}
-
-	connected, err := c.meetingStarter.IsUserConnected(args.UserId)
-	if err != nil {
-		return &model.CommandResponse{
-			ResponseType: model.CommandResponseTypeEphemeral,
-			Text:         "Failed to check Google connection status. Please try again.",
-		}
-	}
-
-	if !connected {
-		connectURL := c.meetingStarter.GetConnectURL()
-		text := "You need to connect your Google account first. Run `/meet connect` to get started."
-		if connectURL != "" {
-			text = fmt.Sprintf("You need to connect your Google account first. [Click here to connect](%s).", connectURL)
-		}
-		return &model.CommandResponse{
-			ResponseType: model.CommandResponseTypeEphemeral,
-			Text:         text,
-		}
+	if resp := c.requireConnected(args.UserId); resp != nil {
+		return resp
 	}
 
 	topic := strings.Join(topicFields, " ")
 
 	if _, err := c.meetingStarter.StartMeeting(args.UserId, args.ChannelId, topic, ""); err != nil {
 		if errors.Is(err, ErrNeedsReconnect) {
-			connectURL := c.meetingStarter.GetConnectURL()
-			text := "Your Google account needs to be reconnected. Run `/meet connect` to reconnect."
-			if connectURL != "" {
-				text = fmt.Sprintf("Your Google account needs to be reconnected. [Click here to reconnect](%s).", connectURL)
-			}
-			return &model.CommandResponse{
-				ResponseType: model.CommandResponseTypeEphemeral,
-				Text:         text,
-			}
+			return c.needsReconnectResponse()
 		}
-
 		if errors.Is(err, ErrPublicChannelRestricted) {
-			return &model.CommandResponse{
-				ResponseType: model.CommandResponseTypeEphemeral,
-				Text:         "Meeting creation is restricted in public channels. Try a private channel or direct message instead.",
-			}
+			return c.ephemeral("Meeting creation is restricted in public channels. Try a private channel or direct message instead.")
 		}
 		// NewCommandHandler always sets c.client, but tests may construct Handler directly.
 		if c.client != nil {
 			c.client.Log.Error("Failed to create meeting", "user_id", args.UserId, "error", err.Error())
 		}
-		return &model.CommandResponse{
-			ResponseType: model.CommandResponseTypeEphemeral,
-			Text:         "Failed to create meeting. Please try again or check the server logs.",
-		}
+		return c.ephemeral("Failed to create meeting. Please try again or check the server logs.")
 	}
 
 	return &model.CommandResponse{}
