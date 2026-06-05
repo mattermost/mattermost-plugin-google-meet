@@ -191,7 +191,9 @@ func (p *Plugin) pollSubscription(store kvstore.KVStore, sub *kvstore.Subscripti
 		if endTime == nil {
 			state, _ := store.GetConferencePostState(confName)
 			if state != nil && !state.MeetingEndedPosted {
-				if rec, fetchErr := p.getConferenceRecord(token, confName); fetchErr == nil && rec != nil {
+				if rec, fetchErr := p.getConferenceRecord(token, confName); fetchErr != nil {
+					p.API.LogWarn("Failed to fetch conference record for end-time check", "conference", confName, "error", fetchErr.Error())
+				} else if rec != nil {
 					endTime = rec.EndTime
 				}
 			}

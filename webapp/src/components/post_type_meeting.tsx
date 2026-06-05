@@ -30,10 +30,6 @@ const getStyle = makeStyleFromTheme((theme: Record<string, string>) => {
             borderRadius: '4px',
             color: theme.buttonColor,
         },
-        buttonIcon: {
-            paddingRight: '8px',
-            verticalAlign: 'text-bottom',
-        },
         summary: {
             fontFamily: 'Open Sans',
             fontSize: '14px',
@@ -109,12 +105,14 @@ const PostTypeMeeting = ({post, theme}: PostTypeMeetingProps) => {
         const startDate = new Date(post.create_at);
         const endMs = props.meeting_end_time ?? Date.now();
 
-        subtitle = (
-            <span>
-                {'Meeting URL: '}
-                <ExternalLink href={meetingLink}>{meetingLink}</ExternalLink>
-            </span>
-        );
+        if (meetingLink) {
+            subtitle = (
+                <span>
+                    {'Meeting URL: '}
+                    <ExternalLink href={meetingLink}>{meetingLink}</ExternalLink>
+                </span>
+            );
+        }
 
         content = (
             <div>
@@ -137,8 +135,9 @@ const PostTypeMeeting = ({post, theme}: PostTypeMeetingProps) => {
                 className='btn btn-primary'
                 style={style.button}
                 href={meetingLink}
+                aria-label='Join meeting'
             >
-                <VideoCameraIcon style={style.buttonIcon}/>
+                <VideoCameraIcon />
                 {'JOIN MEETING'}
             </ExternalLink>
         );
