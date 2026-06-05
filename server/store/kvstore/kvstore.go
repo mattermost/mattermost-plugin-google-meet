@@ -43,6 +43,7 @@ type ConferencePostState struct {
 	PostedRecordingIDs  []string `json:"posted_recording_ids"`
 	PostedTranscriptIDs []string `json:"posted_transcript_ids"`
 	PostedSmartNoteIDs  []string `json:"posted_smart_note_ids"`
+	MeetingEndedPosted  bool     `json:"meeting_ended_posted,omitempty"`
 }
 
 // AdHocMeetingPost is stored when a user starts an ad-hoc meeting via /meet start.

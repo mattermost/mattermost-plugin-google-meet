@@ -10,8 +10,7 @@ import type {GlobalState} from '@mattermost/types/store';
 
 import {GoogleMeetIcon} from 'components/icons';
 import {PostTypeRecording, PostTypeSmartNote, PostTypeTranscript} from 'components/post_type_artifact';
-import PostTypeConference from 'components/post_type_conference';
-import PostTypeGoogleMeet from 'components/post_type_google_meet';
+import PostTypeMeeting from 'components/post_type_meeting';
 
 import type {PluginRegistry} from 'types/mattermost-webapp';
 
@@ -29,8 +28,8 @@ export default class Plugin {
             // Keep the safe default when config status cannot be determined.
         }
 
-        registry.registerPostTypeComponent('custom_google_meet', PostTypeGoogleMeet);
-        registry.registerPostTypeComponent('custom_gmeet_conference', PostTypeConference);
+        registry.registerPostTypeComponent('custom_google_meet', PostTypeMeeting);
+        registry.registerPostTypeComponent('custom_gmeet_conference', PostTypeMeeting);
         registry.registerPostTypeComponent('custom_gmeet_transcript', PostTypeTranscript);
         registry.registerPostTypeComponent('custom_gmeet_recording', PostTypeRecording);
         registry.registerPostTypeComponent('custom_gmeet_smartnote', PostTypeSmartNote);

@@ -56,6 +56,27 @@ func (p *Plugin) postConferenceStarted(sub *kvstore.Subscription, record *confer
 	return created.Id, nil
 }
 
+// markMeetingEnded edits the meeting post to set "meeting_ended": true so the webapp
+// shows a summary instead of the Join button.
+func (p *Plugin) markMeetingEnded(postID string, endTime *time.Time) error {
+	post, appErr := p.API.GetPost(postID)
+	if appErr != nil {
+		return fmt.Errorf("failed to get post %s: %w", postID, appErr)
+	}
+	if post.Props == nil {
+		post.Props = model.StringInterface{}
+	}
+	post.Props["meeting_ended"] = true
+	if endTime != nil {
+		post.Props["meeting_end_time"] = endTime.UnixMilli()
+	}
+	post.Message = "The meeting has ended."
+	if _, appErr = p.API.UpdatePost(post); appErr != nil {
+		return fmt.Errorf("failed to update post %s: %w", postID, appErr)
+	}
+	return nil
+}
+
 // postRecording creates a reply post in the thread for a recording artifact.
 // The recording is linked rather than downloaded so Google Drive's own ACLs continue
 // to gate who can view it, independent of channel membership.

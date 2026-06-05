@@ -259,7 +259,7 @@ func TestPollConferenceArtifacts_RecordingPostedOnce(t *testing.T) {
 
 	p := pollTestPlugin(t, api, kv)
 
-	done := p.pollConferenceArtifacts(kv, token, "conferenceRecords/rec1")
+	done := p.pollConferenceArtifacts(kv, token, "conferenceRecords/rec1", nil)
 	assert.False(t, done)
 
 	// Recording post should have been created.
@@ -276,7 +276,7 @@ func TestPollConferenceArtifacts_RecordingPostedOnce(t *testing.T) {
 
 	// Poll again — recording should NOT be posted again.
 	api.allPosts = nil
-	p.pollConferenceArtifacts(kv, token, "conferenceRecords/rec1")
+	p.pollConferenceArtifacts(kv, token, "conferenceRecords/rec1", nil)
 	assert.Empty(t, api.allPosts, "recording should not be posted twice")
 }
 
