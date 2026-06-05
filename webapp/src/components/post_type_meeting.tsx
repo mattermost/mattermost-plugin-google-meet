@@ -137,7 +137,7 @@ const PostTypeMeeting = ({post, theme}: PostTypeMeetingProps) => {
                 href={meetingLink}
                 aria-label='Join meeting'
             >
-                <VideoCameraIcon />
+                <VideoCameraIcon/>
                 {'JOIN MEETING'}
             </ExternalLink>
         );
