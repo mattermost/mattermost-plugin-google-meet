@@ -235,8 +235,8 @@ func (p *Plugin) pollConferenceArtifacts(store kvstore.KVStore, token *kvstore.O
 	}
 
 	if endTime != nil && !endTime.IsZero() && endTime.Before(time.Now()) && !state.MeetingEndedPosted {
-		if err := p.markMeetingEnded(state.RootPostID, endTime); err != nil {
-			p.API.LogWarn("Failed to mark meeting as ended", "conference", confName, "post_id", state.RootPostID, "error", err.Error())
+		if endErr := p.markMeetingEnded(state.RootPostID, endTime); endErr != nil {
+			p.API.LogWarn("Failed to mark meeting as ended", "conference", confName, "post_id", state.RootPostID, "error", endErr.Error())
 		} else {
 			state.MeetingEndedPosted = true
 			persistState()
