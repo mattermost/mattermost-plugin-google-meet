@@ -4,6 +4,7 @@
     "plugin:@mattermost/react"
   ],
   "rules": {
-    "header/header": "off"
+    "header/header": "off",
+    "react/prop-types": "off"
   }
 }

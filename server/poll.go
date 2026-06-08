@@ -180,11 +180,25 @@ func (p *Plugin) pollSubscription(store kvstore.KVStore, sub *kvstore.Subscripti
 		}
 	}
 
-	// Prune conferences whose post-state has expired (TTL) so ActiveConferenceIDs
-	// doesn't grow unbounded over the life of the subscription.
+	endTimes := make(map[string]*time.Time, len(records))
+	for i := range records {
+		endTimes[records[i].Name] = records[i].EndTime
+	}
+
 	stillActive := sub.ActiveConferenceIDs[:0]
 	for _, confName := range sub.ActiveConferenceIDs {
-		if done := p.pollConferenceArtifacts(store, token, confName); !done {
+		endTime := endTimes[confName]
+		if endTime == nil {
+			state, _ := store.GetConferencePostState(confName)
+			if state != nil && !state.MeetingEndedPosted {
+				if rec, fetchErr := p.getConferenceRecord(token, confName); fetchErr != nil {
+					p.API.LogWarn("Failed to fetch conference record for end-time check", "conference", confName, "error", fetchErr.Error())
+				} else if rec != nil {
+					endTime = rec.EndTime
+				}
+			}
+		}
+		if done := p.pollConferenceArtifacts(store, token, confName, endTime); !done {
 			stillActive = append(stillActive, confName)
 		}
 	}
@@ -197,10 +211,10 @@ func (p *Plugin) pollSubscription(store kvstore.KVStore, sub *kvstore.Subscripti
 }
 
 // pollConferenceArtifacts checks a single conference record for new recordings/transcripts/smart notes.
+// If endTime is non-nil and in the past, the meeting post's Join button is removed (once).
 // Returns true only when the conference's KV state entry is missing (TTL expired), signalling
-// that the caller should prune it from ActiveConferenceIDs. Transient read errors return false
-// so a flaky KV doesn't silently stop monitoring an in-progress conference.
-func (p *Plugin) pollConferenceArtifacts(store kvstore.KVStore, token *kvstore.OAuth2Token, confName string) bool {
+// that the caller should prune it from ActiveConferenceIDs.
+func (p *Plugin) pollConferenceArtifacts(store kvstore.KVStore, token *kvstore.OAuth2Token, confName string, endTime *time.Time) bool {
 	state, err := store.GetConferencePostState(confName)
 	if err != nil {
 		p.API.LogWarn("Failed to get conference post state during artifact poll; will retry", "conference", confName, "error", err.Error())
@@ -217,6 +231,15 @@ func (p *Plugin) pollConferenceArtifacts(store kvstore.KVStore, token *kvstore.O
 	persistState := func() {
 		if persistErr := store.StoreConferencePostState(confName, state); persistErr != nil {
 			p.API.LogWarn("Failed to persist conference post state; artifact may be reposted on retry", "conference", confName, "error", persistErr.Error())
+		}
+	}
+
+	if endTime != nil && !endTime.IsZero() && endTime.Before(time.Now()) && !state.MeetingEndedPosted {
+		if endErr := p.markMeetingEnded(state.RootPostID, endTime); endErr != nil {
+			p.API.LogWarn("Failed to mark meeting as ended", "conference", confName, "post_id", state.RootPostID, "error", endErr.Error())
+		} else {
+			state.MeetingEndedPosted = true
+			persistState()
 		}
 	}
 
@@ -351,7 +374,7 @@ func (p *Plugin) pollAdHocMeetings(store kvstore.KVStore) {
 				}
 			}
 
-			p.pollConferenceArtifacts(store, token, record.Name)
+			p.pollConferenceArtifacts(store, token, record.Name, record.EndTime)
 		}
 	}
 }

@@ -374,6 +374,19 @@ func (p *Plugin) getSpace(token *kvstore.OAuth2Token, meetingCodeOrID string) (*
 	return &space, nil
 }
 
+// getConferenceRecord fetches a single conference record by its resource name (e.g. "conferenceRecords/abc").
+func (p *Plugin) getConferenceRecord(token *kvstore.OAuth2Token, name string) (*conferenceRecord, error) {
+	body, err := p.meetGet(token, "/"+name)
+	if err != nil {
+		return nil, err
+	}
+	var record conferenceRecord
+	if err := json.Unmarshal(body, &record); err != nil {
+		return nil, fmt.Errorf("failed to parse conference record: %w", err)
+	}
+	return &record, nil
+}
+
 // listConferenceRecords returns conference records for the given space that started strictly after `since`.
 // The filter is pushed to the API (start_time>=) to avoid fetching full history, and re-checked
 // client-side with strict-after because our watermark semantics require excluding the equal timestamp.
