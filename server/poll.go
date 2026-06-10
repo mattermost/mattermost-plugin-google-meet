@@ -149,7 +149,7 @@ func (p *Plugin) pollSubscription(store kvstore.KVStore, sub *kvstore.Subscripti
 				hadFailure = true
 				continue
 			}
-			p.API.LogInfo("Posted new Google Meet conference notification", "conference", record.Name, "space_id", sub.SpaceID, "channel_id", sub.ChannelID, "root_post_id", postID)
+			p.API.LogInfo("Posted new Google Meet conference notification", "conference", record.Name, "space_id", sub.SpaceID, "channel_id", sub.ChannelID, "meeting_post_id", postID)
 			state = &kvstore.ConferencePostState{
 				MeetingPostID: postID,
 				ThreadRootID:  postID,
@@ -262,7 +262,7 @@ func (p *Plugin) pollConferenceArtifacts(store kvstore.KVStore, token *kvstore.O
 			p.API.LogWarn("Failed to post recording", "recording", rec.Name, "error", err.Error())
 			continue
 		}
-		p.API.LogInfo("Posted recording to thread", "recording", rec.Name, "conference", confName, "root_post_id", threadRootID)
+		p.API.LogInfo("Posted recording to thread", "recording", rec.Name, "conference", confName, "thread_root_id", threadRootID)
 		state.PostedRecordingIDs = append(state.PostedRecordingIDs, rec.Name)
 		persistState()
 	}
@@ -283,7 +283,7 @@ func (p *Plugin) pollConferenceArtifacts(store kvstore.KVStore, token *kvstore.O
 			p.API.LogWarn("Failed to post transcript", "transcript", tr.Name, "error", err.Error())
 			continue
 		}
-		p.API.LogInfo("Posted transcript to thread", "transcript", tr.Name, "conference", confName, "root_post_id", threadRootID)
+		p.API.LogInfo("Posted transcript to thread", "transcript", tr.Name, "conference", confName, "thread_root_id", threadRootID)
 		state.PostedTranscriptIDs = append(state.PostedTranscriptIDs, tr.Name)
 		persistState()
 	}
@@ -304,7 +304,7 @@ func (p *Plugin) pollConferenceArtifacts(store kvstore.KVStore, token *kvstore.O
 			p.API.LogWarn("Failed to post smart note", "smart_note", sn.Name, "error", err.Error())
 			continue
 		}
-		p.API.LogInfo("Posted smart note to thread", "smart_note", sn.Name, "conference", confName, "root_post_id", threadRootID)
+		p.API.LogInfo("Posted smart note to thread", "smart_note", sn.Name, "conference", confName, "thread_root_id", threadRootID)
 		state.PostedSmartNoteIDs = append(state.PostedSmartNoteIDs, sn.Name)
 		persistState()
 	}

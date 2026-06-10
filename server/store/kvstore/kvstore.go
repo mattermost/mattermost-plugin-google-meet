@@ -38,9 +38,7 @@ type Subscription struct {
 
 // ConferencePostState tracks what artifacts have been posted for one conferenceRecord.
 type ConferencePostState struct {
-	// MeetingPostID is the Mattermost post for the meeting or conference announcement.
-	// The JSON key root_post_id is kept for backward compatibility with stored KV data.
-	MeetingPostID string `json:"root_post_id"`
+	MeetingPostID string `json:"meeting_post_id"`
 	// ThreadRootID is the RootId used when posting artifacts. For top-level meetings
 	// this matches MeetingPostID; for thread-started meetings it is the parent thread root.
 	ThreadRootID         string   `json:"thread_root_id,omitempty"`
@@ -63,9 +61,7 @@ func (s *ConferencePostState) ArtifactThreadRoot() string {
 // It binds the meeting space to the Mattermost post and channel so the polling loop
 // can post recording/transcript/smart-note artifacts without an explicit subscription.
 type AdHocMeetingPost struct {
-	// MeetingPostID is the Mattermost post created by /meet start.
-	// The JSON key root_post_id is kept for backward compatibility with stored KV data.
-	MeetingPostID string `json:"root_post_id"`
+	MeetingPostID string `json:"meeting_post_id"`
 	// ThreadRootID is the RootId to use when posting artifacts.
 	ThreadRootID string    `json:"thread_root_id,omitempty"`
 	ChannelID    string    `json:"channel_id"`
