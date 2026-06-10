@@ -27,7 +27,7 @@ type SubscriptionInfo struct {
 
 // MeetingStarter is the interface the command handler uses to start meetings and manage subscriptions.
 type MeetingStarter interface {
-	StartMeeting(userID, channelID, topic, connectionID string) (string, error)
+	StartMeeting(userID, channelID, topic, connectionID, rootPostID string) (string, error)
 	GetConnectURL() string
 	DisconnectUser(userID string) error
 	IsUserConnected(userID string) (bool, error)
@@ -333,7 +333,7 @@ func (c *Handler) executeMeetStartCommand(args *model.CommandArgs, topicFields [
 
 	topic := strings.Join(topicFields, " ")
 
-	if _, err := c.meetingStarter.StartMeeting(args.UserId, args.ChannelId, topic, ""); err != nil {
+	if _, err := c.meetingStarter.StartMeeting(args.UserId, args.ChannelId, topic, "", args.RootId); err != nil {
 		if errors.Is(err, ErrNeedsReconnect) {
 			return c.needsReconnectResponse()
 		}

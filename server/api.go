@@ -308,7 +308,7 @@ func (p *Plugin) handleCreateMeeting(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	meetURL, err := p.StartMeeting(userID, req.ChannelID, req.Topic, req.ConnectionID)
+	meetURL, err := p.StartMeeting(userID, req.ChannelID, req.Topic, req.ConnectionID, "")
 	if err != nil {
 		if errors.Is(err, command.ErrNeedsReconnect) {
 			connectURL := p.GetConnectURL()

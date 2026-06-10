@@ -23,7 +23,7 @@ var ErrNoChannelPermission = errors.New("no permission to create posts in this c
 // starter's clients via WebSocket (for opening the join URL), and returns the meet URL.
 // connectionID, when non-empty, scopes the WebSocket event to that browser session only
 // (see mattermost-plugin-zoom PR #468 / MM-68481).
-func (p *Plugin) StartMeeting(userID, channelID, topic, connectionID string) (string, error) {
+func (p *Plugin) StartMeeting(userID, channelID, topic, connectionID, rootPostID string) (string, error) {
 	if !p.API.HasPermissionToChannel(userID, channelID, model.PermissionCreatePost) {
 		return "", ErrNoChannelPermission
 	}
@@ -78,6 +78,9 @@ func (p *Plugin) StartMeeting(userID, channelID, topic, connectionID string) (st
 			"meeting_link":  meetURL,
 			"meeting_topic": topic,
 		},
+	}
+	if rootPostID != "" {
+		post.RootId = rootPostID
 	}
 
 	createdPost, appErr := p.API.CreatePost(post)
