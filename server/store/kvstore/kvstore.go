@@ -41,12 +41,12 @@ type ConferencePostState struct {
 	MeetingPostID string `json:"meeting_post_id"`
 	// ThreadRootID is the RootId used when posting artifacts. For top-level meetings
 	// this matches MeetingPostID; for thread-started meetings it is the parent thread root.
-	ThreadRootID         string   `json:"thread_root_id,omitempty"`
-	ChannelID            string   `json:"channel_id"`
-	PostedRecordingIDs   []string `json:"posted_recording_ids"`
-	PostedTranscriptIDs  []string `json:"posted_transcript_ids"`
-	PostedSmartNoteIDs   []string `json:"posted_smart_note_ids"`
-	MeetingEndedPosted   bool     `json:"meeting_ended_posted,omitempty"`
+	ThreadRootID        string   `json:"thread_root_id,omitempty"`
+	ChannelID           string   `json:"channel_id"`
+	PostedRecordingIDs  []string `json:"posted_recording_ids"`
+	PostedTranscriptIDs []string `json:"posted_transcript_ids"`
+	PostedSmartNoteIDs  []string `json:"posted_smart_note_ids"`
+	MeetingEndedPosted  bool     `json:"meeting_ended_posted,omitempty"`
 }
 
 // ArtifactThreadRoot returns the RootId to use when posting artifacts.
