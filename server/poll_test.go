@@ -126,8 +126,8 @@ func TestPollSubscription_DuplicateConferenceNotPostedAgain(t *testing.T) {
 
 	// Pre-seed state as if we already processed this conference.
 	existingState := &kvstore.ConferencePostState{
-		RootPostID: "existing-post-id",
-		ChannelID:  "chan1",
+		MeetingPostID: "existing-post-id",
+		ChannelID:     "chan1",
 	}
 	require.NoError(t, kv.StoreConferencePostState("conferenceRecords/rec1", existingState))
 
@@ -252,8 +252,9 @@ func TestPollConferenceArtifacts_RecordingPostedOnce(t *testing.T) {
 	kv.tokens["user1"] = token
 
 	state := &kvstore.ConferencePostState{
-		RootPostID: "root-post-id",
-		ChannelID:  "chan1",
+		MeetingPostID: "root-post-id",
+		ThreadRootID:  "root-post-id",
+		ChannelID:     "chan1",
 	}
 	require.NoError(t, kv.StoreConferencePostState("conferenceRecords/rec1", state))
 
@@ -345,9 +346,10 @@ func TestPollAdHocMeetings_TranscriptPostedAsReply(t *testing.T) {
 
 	// Simulate an ad-hoc entry as created by StartMeeting.
 	adHocEntry := &kvstore.AdHocMeetingPost{
-		RootPostID: "original-meet-post-id",
-		ChannelID:  "chan1",
-		UserID:     "user1",
+		MeetingPostID: "original-meet-post-id",
+		ThreadRootID:  "original-meet-post-id",
+		ChannelID:     "chan1",
+		UserID:        "user1",
 	}
 	require.NoError(t, kv.StoreAdHocMeetingPost("spaces/adhoc1", adHocEntry))
 	require.NoError(t, kv.AddToAdHocIndex("spaces/adhoc1"))
@@ -366,6 +368,69 @@ func TestPollAdHocMeetings_TranscriptPostedAsReply(t *testing.T) {
 	api.allPosts = nil
 	p.pollAdHocMeetings(kv)
 	assert.Empty(t, api.allPosts, "transcript should not be posted twice")
+}
+
+func TestPollAdHocMeetings_TranscriptPostedInThread(t *testing.T) {
+	now := time.Now().UTC()
+	token := &kvstore.OAuth2Token{
+		AccessToken: "test-token",
+		Expiry:      now.Add(time.Hour),
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v2/conferenceRecords":
+			require.NoError(t, json.NewEncoder(w).Encode(map[string]any{
+				"conferenceRecords": []conferenceRecord{
+					{Name: "conferenceRecords/rec1", StartTime: &now},
+				},
+			}))
+		case "/v2/conferenceRecords/rec1/transcripts":
+			require.NoError(t, json.NewEncoder(w).Encode(map[string]any{
+				"transcripts": []meetTranscript{
+					{Name: "conferenceRecords/rec1/transcripts/t1", State: meetStateFileGenerated},
+				},
+			}))
+		case "/v2/conferenceRecords/rec1/transcripts/t1/entries":
+			require.NoError(t, json.NewEncoder(w).Encode(map[string]any{
+				"transcriptEntries": []transcriptEntry{
+					{Name: "conferenceRecords/rec1/transcripts/t1/entries/e1", Text: "Hello world", StartTime: now},
+				},
+			}))
+		default:
+			w.WriteHeader(http.StatusOK)
+			require.NoError(t, json.NewEncoder(w).Encode(map[string]any{}))
+		}
+	}))
+	defer server.Close()
+
+	origURL := googleMeetURL
+	origClient := httpClient
+	googleMeetURL = server.URL + "/v2"
+	httpClient = server.Client()
+	defer func() { googleMeetURL = origURL; httpClient = origClient }()
+
+	api := &mockPluginAPI{siteURL: "http://localhost:8065", captureAllPosts: true}
+	kv := newMockKVStore()
+	kv.tokens["user1"] = token
+
+	adHocEntry := &kvstore.AdHocMeetingPost{
+		MeetingPostID: "original-meet-post-id",
+		ThreadRootID:  "thread-root-1",
+		ChannelID:     "chan1",
+		UserID:        "user1",
+	}
+	require.NoError(t, kv.StoreAdHocMeetingPost("spaces/adhoc1", adHocEntry))
+	require.NoError(t, kv.AddToAdHocIndex("spaces/adhoc1"))
+
+	p := pollTestPlugin(t, api, kv)
+	p.pollAdHocMeetings(kv)
+
+	require.NotEmpty(t, api.allPosts, "expected at least one artifact post")
+	trPost := api.allPosts[0]
+	assert.Equal(t, postTypeTranscript, trPost.Type)
+	assert.Equal(t, "thread-root-1", trPost.RootId)
+	assert.Equal(t, "chan1", trPost.ChannelId)
 }
 
 // TestPollAdHocMeetings_ExpiredEntryPruned verifies that a TTL-expired ad-hoc entry

@@ -149,10 +149,11 @@ func (p *Plugin) pollSubscription(store kvstore.KVStore, sub *kvstore.Subscripti
 				hadFailure = true
 				continue
 			}
-			p.API.LogInfo("Posted new Google Meet conference notification", "conference", record.Name, "space_id", sub.SpaceID, "channel_id", sub.ChannelID, "root_post_id", postID)
+			p.API.LogInfo("Posted new Google Meet conference notification", "conference", record.Name, "space_id", sub.SpaceID, "channel_id", sub.ChannelID, "meeting_post_id", postID)
 			state = &kvstore.ConferencePostState{
-				RootPostID: postID,
-				ChannelID:  sub.ChannelID,
+				MeetingPostID: postID,
+				ThreadRootID:  postID,
+				ChannelID:     sub.ChannelID,
 			}
 			if err := store.StoreConferencePostState(record.Name, state); err != nil {
 				p.API.LogWarn("Failed to store conference post state; will retry on next poll", "conference", record.Name, "error", err.Error())
@@ -224,6 +225,8 @@ func (p *Plugin) pollConferenceArtifacts(store kvstore.KVStore, token *kvstore.O
 		return true
 	}
 
+	threadRootID := state.ArtifactThreadRoot()
+
 	// Persist state right after each successful post so a single end-of-call
 	// KV failure can only re-post one artifact next cycle, not the whole batch.
 	// At-least-once: a transient KV failure produces a duplicate Drive/Docs link
@@ -235,8 +238,8 @@ func (p *Plugin) pollConferenceArtifacts(store kvstore.KVStore, token *kvstore.O
 	}
 
 	if endTime != nil && !endTime.IsZero() && endTime.Before(time.Now()) && !state.MeetingEndedPosted {
-		if endErr := p.markMeetingEnded(state.RootPostID, endTime); endErr != nil {
-			p.API.LogWarn("Failed to mark meeting as ended", "conference", confName, "post_id", state.RootPostID, "error", endErr.Error())
+		if endErr := p.markMeetingEnded(state.MeetingPostID, endTime); endErr != nil {
+			p.API.LogWarn("Failed to mark meeting as ended", "conference", confName, "post_id", state.MeetingPostID, "error", endErr.Error())
 		} else {
 			state.MeetingEndedPosted = true
 			persistState()
@@ -255,11 +258,11 @@ func (p *Plugin) pollConferenceArtifacts(store kvstore.KVStore, token *kvstore.O
 		if slices.Contains(state.PostedRecordingIDs, rec.Name) {
 			continue
 		}
-		if err = p.postRecording(state.ChannelID, state.RootPostID, rec); err != nil {
+		if err = p.postRecording(state.ChannelID, threadRootID, rec); err != nil {
 			p.API.LogWarn("Failed to post recording", "recording", rec.Name, "error", err.Error())
 			continue
 		}
-		p.API.LogInfo("Posted recording to thread", "recording", rec.Name, "conference", confName, "root_post_id", state.RootPostID)
+		p.API.LogInfo("Posted recording to thread", "recording", rec.Name, "conference", confName, "thread_root_id", threadRootID)
 		state.PostedRecordingIDs = append(state.PostedRecordingIDs, rec.Name)
 		persistState()
 	}
@@ -276,11 +279,11 @@ func (p *Plugin) pollConferenceArtifacts(store kvstore.KVStore, token *kvstore.O
 		if slices.Contains(state.PostedTranscriptIDs, tr.Name) {
 			continue
 		}
-		if err = p.postTranscript(token, state.ChannelID, state.RootPostID, tr); err != nil {
+		if err = p.postTranscript(token, state.ChannelID, threadRootID, tr); err != nil {
 			p.API.LogWarn("Failed to post transcript", "transcript", tr.Name, "error", err.Error())
 			continue
 		}
-		p.API.LogInfo("Posted transcript to thread", "transcript", tr.Name, "conference", confName, "root_post_id", state.RootPostID)
+		p.API.LogInfo("Posted transcript to thread", "transcript", tr.Name, "conference", confName, "thread_root_id", threadRootID)
 		state.PostedTranscriptIDs = append(state.PostedTranscriptIDs, tr.Name)
 		persistState()
 	}
@@ -297,11 +300,11 @@ func (p *Plugin) pollConferenceArtifacts(store kvstore.KVStore, token *kvstore.O
 		if slices.Contains(state.PostedSmartNoteIDs, sn.Name) {
 			continue
 		}
-		if err = p.postSmartNote(state.ChannelID, state.RootPostID, sn); err != nil {
+		if err = p.postSmartNote(state.ChannelID, threadRootID, sn); err != nil {
 			p.API.LogWarn("Failed to post smart note", "smart_note", sn.Name, "error", err.Error())
 			continue
 		}
-		p.API.LogInfo("Posted smart note to thread", "smart_note", sn.Name, "conference", confName, "root_post_id", state.RootPostID)
+		p.API.LogInfo("Posted smart note to thread", "smart_note", sn.Name, "conference", confName, "thread_root_id", threadRootID)
 		state.PostedSmartNoteIDs = append(state.PostedSmartNoteIDs, sn.Name)
 		persistState()
 	}
@@ -365,8 +368,9 @@ func (p *Plugin) pollAdHocMeetings(store kvstore.KVStore) {
 			if state == nil {
 				// Pin the conference to the existing /meet start post instead of creating a new one.
 				state = &kvstore.ConferencePostState{
-					RootPostID: entry.RootPostID,
-					ChannelID:  entry.ChannelID,
+					MeetingPostID: entry.MeetingPostID,
+					ThreadRootID:  entry.ThreadRootID,
+					ChannelID:     entry.ChannelID,
 				}
 				if err := store.StoreConferencePostState(record.Name, state); err != nil {
 					p.API.LogWarn("Failed to store conference post state for ad-hoc meeting", "conference", record.Name, "error", err.Error())

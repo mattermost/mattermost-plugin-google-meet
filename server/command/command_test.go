@@ -55,9 +55,10 @@ type mockMeetingStarter struct {
 	disconnectErr         error
 	disconnectedID        string
 	startedMeeting        struct {
-		userID    string
-		channelID string
-		topic     string
+		userID     string
+		channelID  string
+		topic      string
+		rootPostID string
 	}
 	addSubErr      error
 	addedSub       *kvstore.Subscription
@@ -66,10 +67,11 @@ type mockMeetingStarter struct {
 	listSubsErr    error
 }
 
-func (m *mockMeetingStarter) StartMeeting(userID, channelID, topic, _ string) (string, error) {
+func (m *mockMeetingStarter) StartMeeting(userID, channelID, topic, _, rootPostID string) (string, error) {
 	m.startedMeeting.userID = userID
 	m.startedMeeting.channelID = channelID
 	m.startedMeeting.topic = topic
+	m.startedMeeting.rootPostID = rootPostID
 	return "", m.startErr
 }
 
@@ -262,6 +264,23 @@ func TestExecuteMeetCommand_StartSubcommandSuccess(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "", resp.Text)
 	assert.Equal(t, "Sprint Planning", mock.startedMeeting.topic)
+	assert.Empty(t, mock.startedMeeting.rootPostID)
+}
+
+func TestExecuteMeetCommand_StartSubcommandInThread(t *testing.T) {
+	mock := &mockMeetingStarter{configured: true, connected: true}
+	handler := &Handler{meetingStarter: mock}
+
+	resp, err := handler.Handle(&model.CommandArgs{
+		Command:   "/meet start Sprint Planning",
+		UserId:    "user1",
+		ChannelId: "chan1",
+		RootId:    "thread-root-1",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "", resp.Text)
+	assert.Equal(t, "Sprint Planning", mock.startedMeeting.topic)
+	assert.Equal(t, "thread-root-1", mock.startedMeeting.rootPostID)
 }
 
 func TestExecuteMeetCommand_Connect(t *testing.T) {
