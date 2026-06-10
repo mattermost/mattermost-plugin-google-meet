@@ -13,8 +13,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/mattermost/mattermost/server/public/model"
-
 	"github.com/mattermost/mattermost-plugin-google-meet/server/store/kvstore"
 )
 
@@ -128,8 +126,8 @@ func TestPollSubscription_DuplicateConferenceNotPostedAgain(t *testing.T) {
 
 	// Pre-seed state as if we already processed this conference.
 	existingState := &kvstore.ConferencePostState{
-		RootPostID: "existing-post-id",
-		ChannelID:  "chan1",
+		MeetingPostID: "existing-post-id",
+		ChannelID:     "chan1",
 	}
 	require.NoError(t, kv.StoreConferencePostState("conferenceRecords/rec1", existingState))
 
@@ -254,8 +252,9 @@ func TestPollConferenceArtifacts_RecordingPostedOnce(t *testing.T) {
 	kv.tokens["user1"] = token
 
 	state := &kvstore.ConferencePostState{
-		RootPostID: "root-post-id",
-		ChannelID:  "chan1",
+		MeetingPostID: "root-post-id",
+		ThreadRootID:  "root-post-id",
+		ChannelID:     "chan1",
 	}
 	require.NoError(t, kv.StoreConferencePostState("conferenceRecords/rec1", state))
 
@@ -347,9 +346,10 @@ func TestPollAdHocMeetings_TranscriptPostedAsReply(t *testing.T) {
 
 	// Simulate an ad-hoc entry as created by StartMeeting.
 	adHocEntry := &kvstore.AdHocMeetingPost{
-		RootPostID: "original-meet-post-id",
-		ChannelID:  "chan1",
-		UserID:     "user1",
+		MeetingPostID: "original-meet-post-id",
+		ThreadRootID:  "original-meet-post-id",
+		ChannelID:     "chan1",
+		UserID:        "user1",
 	}
 	require.NoError(t, kv.StoreAdHocMeetingPost("spaces/adhoc1", adHocEntry))
 	require.NoError(t, kv.AddToAdHocIndex("spaces/adhoc1"))
@@ -410,24 +410,15 @@ func TestPollAdHocMeetings_TranscriptPostedInThread(t *testing.T) {
 	httpClient = server.Client()
 	defer func() { googleMeetURL = origURL; httpClient = origClient }()
 
-	api := &mockPluginAPI{
-		siteURL:         "http://localhost:8065",
-		captureAllPosts: true,
-		posts: map[string]*model.Post{
-			"original-meet-post-id": {
-				Id:        "original-meet-post-id",
-				ChannelId: "chan1",
-				RootId:    "thread-root-1",
-			},
-		},
-	}
+	api := &mockPluginAPI{siteURL: "http://localhost:8065", captureAllPosts: true}
 	kv := newMockKVStore()
 	kv.tokens["user1"] = token
 
 	adHocEntry := &kvstore.AdHocMeetingPost{
-		RootPostID: "original-meet-post-id",
-		ChannelID:  "chan1",
-		UserID:     "user1",
+		MeetingPostID: "original-meet-post-id",
+		ThreadRootID:  "thread-root-1",
+		ChannelID:     "chan1",
+		UserID:        "user1",
 	}
 	require.NoError(t, kv.StoreAdHocMeetingPost("spaces/adhoc1", adHocEntry))
 	require.NoError(t, kv.AddToAdHocIndex("spaces/adhoc1"))

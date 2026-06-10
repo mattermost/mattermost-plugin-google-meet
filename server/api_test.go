@@ -36,7 +36,6 @@ type mockPluginAPI struct {
 	hasPerm         bool
 	captureAllPosts bool
 	allPosts        []*model.Post
-	posts           map[string]*model.Post
 	wsPublished     []mockWSPublish
 }
 
@@ -80,15 +79,6 @@ func (m *mockPluginAPI) GetChannel(channelID string) (*model.Channel, *model.App
 		return m.channel, nil
 	}
 	return &model.Channel{Id: channelID, Type: model.ChannelTypePrivate}, nil
-}
-
-func (m *mockPluginAPI) GetPost(postID string) (*model.Post, *model.AppError) {
-	if m.posts != nil {
-		if post, ok := m.posts[postID]; ok {
-			return post, nil
-		}
-	}
-	return &model.Post{Id: postID}, nil
 }
 
 func (m *mockPluginAPI) CreatePost(post *model.Post) (*model.Post, *model.AppError) {

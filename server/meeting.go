@@ -96,11 +96,16 @@ func (p *Plugin) StartMeeting(userID, channelID, topic, connectionID, rootPostID
 	// the poller wouldn't know to look at it.
 	if spaceName != "" {
 		kvStore := p.getKVStore()
+		threadRootID := rootPostID
+		if threadRootID == "" {
+			threadRootID = createdPost.Id
+		}
 		entry := &kvstore.AdHocMeetingPost{
-			RootPostID: createdPost.Id,
-			ChannelID:  channelID,
-			UserID:     userID,
-			CreatedAt:  time.Now().UTC(),
+			MeetingPostID: createdPost.Id,
+			ThreadRootID:  threadRootID,
+			ChannelID:     channelID,
+			UserID:        userID,
+			CreatedAt:     time.Now().UTC(),
 		}
 		if storeErr := kvStore.AddToAdHocIndex(spaceName); storeErr != nil {
 			p.API.LogWarn("StartMeeting: failed to add to ad-hoc index", "space", spaceName, "error", storeErr.Error())

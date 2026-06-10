@@ -151,8 +151,9 @@ func (p *Plugin) pollSubscription(store kvstore.KVStore, sub *kvstore.Subscripti
 			}
 			p.API.LogInfo("Posted new Google Meet conference notification", "conference", record.Name, "space_id", sub.SpaceID, "channel_id", sub.ChannelID, "root_post_id", postID)
 			state = &kvstore.ConferencePostState{
-				RootPostID: postID,
-				ChannelID:  sub.ChannelID,
+				MeetingPostID: postID,
+				ThreadRootID:  postID,
+				ChannelID:     sub.ChannelID,
 			}
 			if err := store.StoreConferencePostState(record.Name, state); err != nil {
 				p.API.LogWarn("Failed to store conference post state; will retry on next poll", "conference", record.Name, "error", err.Error())
@@ -224,11 +225,7 @@ func (p *Plugin) pollConferenceArtifacts(store kvstore.KVStore, token *kvstore.O
 		return true
 	}
 
-	threadRootID, resolveErr := p.resolveArtifactThreadRoot(state.RootPostID)
-	if resolveErr != nil {
-		p.API.LogWarn("Failed to resolve artifact thread root; using meeting post ID", "meeting_post_id", state.RootPostID, "error", resolveErr.Error())
-		threadRootID = state.RootPostID
-	}
+	threadRootID := state.ArtifactThreadRoot()
 
 	// Persist state right after each successful post so a single end-of-call
 	// KV failure can only re-post one artifact next cycle, not the whole batch.
@@ -241,8 +238,8 @@ func (p *Plugin) pollConferenceArtifacts(store kvstore.KVStore, token *kvstore.O
 	}
 
 	if endTime != nil && !endTime.IsZero() && endTime.Before(time.Now()) && !state.MeetingEndedPosted {
-		if endErr := p.markMeetingEnded(state.RootPostID, endTime); endErr != nil {
-			p.API.LogWarn("Failed to mark meeting as ended", "conference", confName, "post_id", state.RootPostID, "error", endErr.Error())
+		if endErr := p.markMeetingEnded(state.MeetingPostID, endTime); endErr != nil {
+			p.API.LogWarn("Failed to mark meeting as ended", "conference", confName, "post_id", state.MeetingPostID, "error", endErr.Error())
 		} else {
 			state.MeetingEndedPosted = true
 			persistState()
@@ -371,8 +368,9 @@ func (p *Plugin) pollAdHocMeetings(store kvstore.KVStore) {
 			if state == nil {
 				// Pin the conference to the existing /meet start post instead of creating a new one.
 				state = &kvstore.ConferencePostState{
-					RootPostID: entry.RootPostID,
-					ChannelID:  entry.ChannelID,
+					MeetingPostID: entry.MeetingPostID,
+					ThreadRootID:  entry.ThreadRootID,
+					ChannelID:     entry.ChannelID,
 				}
 				if err := store.StoreConferencePostState(record.Name, state); err != nil {
 					p.API.LogWarn("Failed to store conference post state for ad-hoc meeting", "conference", record.Name, "error", err.Error())

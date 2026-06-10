@@ -38,22 +38,39 @@ type Subscription struct {
 
 // ConferencePostState tracks what artifacts have been posted for one conferenceRecord.
 type ConferencePostState struct {
-	RootPostID          string   `json:"root_post_id"`
-	ChannelID           string   `json:"channel_id"`
-	PostedRecordingIDs  []string `json:"posted_recording_ids"`
-	PostedTranscriptIDs []string `json:"posted_transcript_ids"`
-	PostedSmartNoteIDs  []string `json:"posted_smart_note_ids"`
-	MeetingEndedPosted  bool     `json:"meeting_ended_posted,omitempty"`
+	// MeetingPostID is the Mattermost post for the meeting or conference announcement.
+	// The JSON key root_post_id is kept for backward compatibility with stored KV data.
+	MeetingPostID string `json:"root_post_id"`
+	// ThreadRootID is the RootId used when posting artifacts. For top-level meetings
+	// this matches MeetingPostID; for thread-started meetings it is the parent thread root.
+	ThreadRootID         string   `json:"thread_root_id,omitempty"`
+	ChannelID            string   `json:"channel_id"`
+	PostedRecordingIDs   []string `json:"posted_recording_ids"`
+	PostedTranscriptIDs  []string `json:"posted_transcript_ids"`
+	PostedSmartNoteIDs   []string `json:"posted_smart_note_ids"`
+	MeetingEndedPosted   bool     `json:"meeting_ended_posted,omitempty"`
+}
+
+// ArtifactThreadRoot returns the RootId to use when posting artifacts.
+func (s *ConferencePostState) ArtifactThreadRoot() string {
+	if s.ThreadRootID != "" {
+		return s.ThreadRootID
+	}
+	return s.MeetingPostID
 }
 
 // AdHocMeetingPost is stored when a user starts an ad-hoc meeting via /meet start.
 // It binds the meeting space to the Mattermost post and channel so the polling loop
 // can post recording/transcript/smart-note artifacts without an explicit subscription.
 type AdHocMeetingPost struct {
-	RootPostID string    `json:"root_post_id"`
-	ChannelID  string    `json:"channel_id"`
-	UserID     string    `json:"user_id"` // used to obtain the OAuth token for Meet API calls
-	CreatedAt  time.Time `json:"created_at"`
+	// MeetingPostID is the Mattermost post created by /meet start.
+	// The JSON key root_post_id is kept for backward compatibility with stored KV data.
+	MeetingPostID string `json:"root_post_id"`
+	// ThreadRootID is the RootId to use when posting artifacts.
+	ThreadRootID string    `json:"thread_root_id,omitempty"`
+	ChannelID    string    `json:"channel_id"`
+	UserID       string    `json:"user_id"` // used to obtain the OAuth token for Meet API calls
+	CreatedAt    time.Time `json:"created_at"`
 }
 
 type KVStore interface {

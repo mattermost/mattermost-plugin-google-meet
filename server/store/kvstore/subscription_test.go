@@ -52,7 +52,8 @@ func TestSubscription_JSONRoundTrip(t *testing.T) {
 
 func TestConferencePostState_JSONRoundTrip(t *testing.T) {
 	state := ConferencePostState{
-		RootPostID:          "root-123",
+		MeetingPostID:       "meeting-123",
+		ThreadRootID:        "thread-root-456",
 		ChannelID:           "chan-456",
 		PostedRecordingIDs:  []string{"rec/r1", "rec/r2"},
 		PostedTranscriptIDs: []string{"tr/t1"},
@@ -65,10 +66,34 @@ func TestConferencePostState_JSONRoundTrip(t *testing.T) {
 	var got ConferencePostState
 	require.NoError(t, json.Unmarshal(data, &got))
 
-	assert.Equal(t, state.RootPostID, got.RootPostID)
+	assert.Equal(t, state.MeetingPostID, got.MeetingPostID)
+	assert.Equal(t, state.ThreadRootID, got.ThreadRootID)
 	assert.Equal(t, state.ChannelID, got.ChannelID)
 	assert.Equal(t, state.PostedRecordingIDs, got.PostedRecordingIDs)
 	assert.Equal(t, state.PostedTranscriptIDs, got.PostedTranscriptIDs)
+}
+
+func TestConferencePostState_JSONRoundTrip_LegacyRootPostID(t *testing.T) {
+	legacy := `{"root_post_id":"meeting-123","channel_id":"chan-456"}`
+	var got ConferencePostState
+	require.NoError(t, json.Unmarshal([]byte(legacy), &got))
+	assert.Equal(t, "meeting-123", got.MeetingPostID)
+	assert.Empty(t, got.ThreadRootID)
+}
+
+func TestConferencePostState_ArtifactThreadRoot(t *testing.T) {
+	t.Run("uses thread root when set", func(t *testing.T) {
+		state := &ConferencePostState{
+			MeetingPostID: "meeting-123",
+			ThreadRootID:  "thread-root-456",
+		}
+		assert.Equal(t, "thread-root-456", state.ArtifactThreadRoot())
+	})
+
+	t.Run("falls back to meeting post for legacy entries", func(t *testing.T) {
+		state := &ConferencePostState{MeetingPostID: "meeting-123"}
+		assert.Equal(t, "meeting-123", state.ArtifactThreadRoot())
+	})
 }
 
 func TestSubscription_EmptyActiveConferenceIDs(t *testing.T) {
