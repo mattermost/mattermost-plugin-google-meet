@@ -224,6 +224,12 @@ func (p *Plugin) pollConferenceArtifacts(store kvstore.KVStore, token *kvstore.O
 		return true
 	}
 
+	threadRootID, resolveErr := p.resolveArtifactThreadRoot(state.RootPostID)
+	if resolveErr != nil {
+		p.API.LogWarn("Failed to resolve artifact thread root; using meeting post ID", "meeting_post_id", state.RootPostID, "error", resolveErr.Error())
+		threadRootID = state.RootPostID
+	}
+
 	// Persist state right after each successful post so a single end-of-call
 	// KV failure can only re-post one artifact next cycle, not the whole batch.
 	// At-least-once: a transient KV failure produces a duplicate Drive/Docs link
@@ -255,11 +261,11 @@ func (p *Plugin) pollConferenceArtifacts(store kvstore.KVStore, token *kvstore.O
 		if slices.Contains(state.PostedRecordingIDs, rec.Name) {
 			continue
 		}
-		if err = p.postRecording(state.ChannelID, state.RootPostID, rec); err != nil {
+		if err = p.postRecording(state.ChannelID, threadRootID, rec); err != nil {
 			p.API.LogWarn("Failed to post recording", "recording", rec.Name, "error", err.Error())
 			continue
 		}
-		p.API.LogInfo("Posted recording to thread", "recording", rec.Name, "conference", confName, "root_post_id", state.RootPostID)
+		p.API.LogInfo("Posted recording to thread", "recording", rec.Name, "conference", confName, "root_post_id", threadRootID)
 		state.PostedRecordingIDs = append(state.PostedRecordingIDs, rec.Name)
 		persistState()
 	}
@@ -276,11 +282,11 @@ func (p *Plugin) pollConferenceArtifacts(store kvstore.KVStore, token *kvstore.O
 		if slices.Contains(state.PostedTranscriptIDs, tr.Name) {
 			continue
 		}
-		if err = p.postTranscript(token, state.ChannelID, state.RootPostID, tr); err != nil {
+		if err = p.postTranscript(token, state.ChannelID, threadRootID, tr); err != nil {
 			p.API.LogWarn("Failed to post transcript", "transcript", tr.Name, "error", err.Error())
 			continue
 		}
-		p.API.LogInfo("Posted transcript to thread", "transcript", tr.Name, "conference", confName, "root_post_id", state.RootPostID)
+		p.API.LogInfo("Posted transcript to thread", "transcript", tr.Name, "conference", confName, "root_post_id", threadRootID)
 		state.PostedTranscriptIDs = append(state.PostedTranscriptIDs, tr.Name)
 		persistState()
 	}
@@ -297,11 +303,11 @@ func (p *Plugin) pollConferenceArtifacts(store kvstore.KVStore, token *kvstore.O
 		if slices.Contains(state.PostedSmartNoteIDs, sn.Name) {
 			continue
 		}
-		if err = p.postSmartNote(state.ChannelID, state.RootPostID, sn); err != nil {
+		if err = p.postSmartNote(state.ChannelID, threadRootID, sn); err != nil {
 			p.API.LogWarn("Failed to post smart note", "smart_note", sn.Name, "error", err.Error())
 			continue
 		}
-		p.API.LogInfo("Posted smart note to thread", "smart_note", sn.Name, "conference", confName, "root_post_id", state.RootPostID)
+		p.API.LogInfo("Posted smart note to thread", "smart_note", sn.Name, "conference", confName, "root_post_id", threadRootID)
 		state.PostedSmartNoteIDs = append(state.PostedSmartNoteIDs, sn.Name)
 		persistState()
 	}

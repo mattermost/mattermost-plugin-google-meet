@@ -13,6 +13,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/mattermost/mattermost/server/public/model"
+
 	"github.com/mattermost/mattermost-plugin-google-meet/server/store/kvstore"
 )
 
@@ -366,6 +368,78 @@ func TestPollAdHocMeetings_TranscriptPostedAsReply(t *testing.T) {
 	api.allPosts = nil
 	p.pollAdHocMeetings(kv)
 	assert.Empty(t, api.allPosts, "transcript should not be posted twice")
+}
+
+func TestPollAdHocMeetings_TranscriptPostedInThread(t *testing.T) {
+	now := time.Now().UTC()
+	token := &kvstore.OAuth2Token{
+		AccessToken: "test-token",
+		Expiry:      now.Add(time.Hour),
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v2/conferenceRecords":
+			require.NoError(t, json.NewEncoder(w).Encode(map[string]any{
+				"conferenceRecords": []conferenceRecord{
+					{Name: "conferenceRecords/rec1", StartTime: &now},
+				},
+			}))
+		case "/v2/conferenceRecords/rec1/transcripts":
+			require.NoError(t, json.NewEncoder(w).Encode(map[string]any{
+				"transcripts": []meetTranscript{
+					{Name: "conferenceRecords/rec1/transcripts/t1", State: meetStateFileGenerated},
+				},
+			}))
+		case "/v2/conferenceRecords/rec1/transcripts/t1/entries":
+			require.NoError(t, json.NewEncoder(w).Encode(map[string]any{
+				"transcriptEntries": []transcriptEntry{
+					{Name: "conferenceRecords/rec1/transcripts/t1/entries/e1", Text: "Hello world", StartTime: now},
+				},
+			}))
+		default:
+			w.WriteHeader(http.StatusOK)
+			require.NoError(t, json.NewEncoder(w).Encode(map[string]any{}))
+		}
+	}))
+	defer server.Close()
+
+	origURL := googleMeetURL
+	origClient := httpClient
+	googleMeetURL = server.URL + "/v2"
+	httpClient = server.Client()
+	defer func() { googleMeetURL = origURL; httpClient = origClient }()
+
+	api := &mockPluginAPI{
+		siteURL:         "http://localhost:8065",
+		captureAllPosts: true,
+		posts: map[string]*model.Post{
+			"original-meet-post-id": {
+				Id:        "original-meet-post-id",
+				ChannelId: "chan1",
+				RootId:    "thread-root-1",
+			},
+		},
+	}
+	kv := newMockKVStore()
+	kv.tokens["user1"] = token
+
+	adHocEntry := &kvstore.AdHocMeetingPost{
+		RootPostID: "original-meet-post-id",
+		ChannelID:  "chan1",
+		UserID:     "user1",
+	}
+	require.NoError(t, kv.StoreAdHocMeetingPost("spaces/adhoc1", adHocEntry))
+	require.NoError(t, kv.AddToAdHocIndex("spaces/adhoc1"))
+
+	p := pollTestPlugin(t, api, kv)
+	p.pollAdHocMeetings(kv)
+
+	require.NotEmpty(t, api.allPosts, "expected at least one artifact post")
+	trPost := api.allPosts[0]
+	assert.Equal(t, postTypeTranscript, trPost.Type)
+	assert.Equal(t, "thread-root-1", trPost.RootId)
+	assert.Equal(t, "chan1", trPost.ChannelId)
 }
 
 // TestPollAdHocMeetings_ExpiredEntryPruned verifies that a TTL-expired ad-hoc entry

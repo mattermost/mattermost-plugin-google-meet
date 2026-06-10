@@ -56,6 +56,19 @@ func (p *Plugin) postConferenceStarted(sub *kvstore.Subscription, record *confer
 	return created.Id, nil
 }
 
+// resolveArtifactThreadRoot returns the RootId to use for artifact posts under a meeting post.
+// When the meeting post is a reply in a thread, artifacts must use the thread root ID.
+func (p *Plugin) resolveArtifactThreadRoot(meetingPostID string) (string, error) {
+	post, appErr := p.API.GetPost(meetingPostID)
+	if appErr != nil {
+		return "", fmt.Errorf("failed to get meeting post %s: %w", meetingPostID, appErr)
+	}
+	if post.RootId != "" {
+		return post.RootId, nil
+	}
+	return meetingPostID, nil
+}
+
 // markMeetingEnded edits the meeting post to set "meeting_ended": true so the webapp
 // shows a summary instead of the Join button.
 func (p *Plugin) markMeetingEnded(postID string, endTime *time.Time) error {
