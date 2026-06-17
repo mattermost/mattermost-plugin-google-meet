@@ -74,9 +74,9 @@ func (p *Plugin) StartMeeting(userID, channelID, topic, connectionID, rootPostID
 		attachmentTitle = "Google Meet"
 	}
 	slackAttachment := model.SlackAttachment{
-		Fallback: fmt.Sprintf("Meeting started.\n\n[Join Meeting](%s)", meetURL),
+		Fallback: fmt.Sprintf("Meeting started.\n\nMeeting URL: %s", meetURL),
 		Title:    attachmentTitle,
-		Text:     fmt.Sprintf("[Join Meeting](%s)", meetURL),
+		Text:     fmt.Sprintf("Meeting URL: %s", meetURL),
 	}
 
 	post := &model.Post{
