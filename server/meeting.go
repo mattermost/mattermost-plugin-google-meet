@@ -69,12 +69,23 @@ func (p *Plugin) StartMeeting(userID, channelID, topic, connectionID, rootPostID
 		message = fmt.Sprintf("I have started a meeting: **%s**", topic)
 	}
 
+	attachmentTitle := topic
+	if attachmentTitle == "" {
+		attachmentTitle = "Google Meet"
+	}
+	slackAttachment := model.SlackAttachment{
+		Fallback: fmt.Sprintf("Meeting started.\n\nMeeting URL: %s", meetURL),
+		Title:    attachmentTitle,
+		Text:     fmt.Sprintf("Meeting URL: %s", meetURL),
+	}
+
 	post := &model.Post{
 		UserId:    userID,
 		ChannelId: channelID,
 		Message:   message,
 		Type:      "custom_google_meet",
 		Props: model.StringInterface{
+			"attachments":   []*model.SlackAttachment{&slackAttachment},
 			"meeting_link":  meetURL,
 			"meeting_topic": topic,
 		},
