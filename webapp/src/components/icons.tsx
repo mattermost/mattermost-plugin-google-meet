@@ -4,34 +4,121 @@ export const GoogleMeetIcon = () => (
     <svg
         xmlns='http://www.w3.org/2000/svg'
         fill='none'
-        viewBox='0 0 87.5 72'
+        viewBox='0 0 192 192'
         width='16px'
-        height='13px'
+        height='16px'
     >
         <path
-            fill='#00832d'
-            d='M49.5 36l8.53 9.75 11.47 7.33 2-17.02-2-16.64-11.69 6.44z'
+            fill='url(#gmeet-a)'
+            d='M110.015 108.88c-6.829-4.718-6.921-14.778-.179-19.62L165 49.643c7.94-5.701 19-.038 19 9.737v77.755c0 9.675-10.861 15.359-18.821 9.859z'
         />
         <path
-            fill='#0066da'
-            d='M0 51.5V66c0 3.315 2.685 6 6 6h14.5l3-10.96-3-9.54-9.95-3z'
+            fill='url(#gmeet-b)'
+            d='M8 71c0-24.3 19.7-44 44-44h64c11.046 0 20 8.954 20 20v98c0 11.046-8.954 20-20 20H28c-11.046 0-20-8.954-20-20z'
         />
-        <path
-            fill='#e94235'
-            d='M20.5 0L0 20.5l10.55 3 9.95-3 2.95-9.41z'
+        <mask
+            id='gmeet-e'
+            width='129'
+            height='138'
+            x='8'
+            y='27'
+            maskUnits='userSpaceOnUse'
+            style={{maskType: 'luminance'}}
+        >
+            <path
+                fill='#fff'
+                d='M8 71c0-24.3 19.7-44 44-44h64c11.046 0 20 8.954 20 20v98c0 11.046-8.954 20-20 20H28c-11.046 0-20-8.954-20-20z'
+            />
+        </mask>
+        <g
+            filter='url(#gmeet-c)'
+            mask='url(#gmeet-e)'
+        >
+            <path
+                fill='url(#gmeet-f)'
+                d='m73.906 99.198 110-63.198v124z'
+            />
+        </g>
+        <circle
+            cx='38'
+            cy='135'
+            r='14'
+            fill='#fff'
         />
-        <path
-            fill='#2684fc'
-            d='M20.5 20.5H0v31h20.5z'
-        />
-        <path
-            fill='#00ac47'
-            d='M82.6 8.68L69.5 19.42v33.66l13.16 10.79c1.97 1.54 4.85.135 4.85-2.37V11c0-2.535-2.945-3.925-4.91-2.32zM49.5 36v15.5h-29V72h43c3.315 0 6-2.685 6-6V53.08z'
-        />
-        <path
-            fill='#ffba00'
-            d='M63.5 0h-43v20.5h29V36l20-16.57V6c0-3.315-2.685-6-6-6z'
-        />
+        <defs>
+            <linearGradient
+                id='gmeet-a'
+                x1='128.8'
+                x2='227.2'
+                y1='104.44'
+                y2='104.44'
+                gradientUnits='userSpaceOnUse'
+            >
+                <stop stopColor='#f6a100'/>
+                <stop
+                    offset='1'
+                    stopColor='#ffbe00'
+                />
+            </linearGradient>
+            <linearGradient
+                id='gmeet-f'
+                x1='136.22'
+                x2='78.5'
+                y1='91.32'
+                y2='91.19'
+                gradientUnits='userSpaceOnUse'
+            >
+                <stop
+                    offset='.15'
+                    stopColor='#ffb5e8'
+                />
+                <stop
+                    offset='1'
+                    stopColor='#ffdbf5'
+                    stopOpacity='0'
+                />
+            </linearGradient>
+            <radialGradient
+                id='gmeet-b'
+                cx='0'
+                cy='0'
+                r='1'
+                gradientTransform='matrix(-159.725 0 0 -135.852 160.325 96)'
+                gradientUnits='userSpaceOnUse'
+            >
+                <stop
+                    offset='.15'
+                    stopColor='#ffe921'
+                />
+                <stop
+                    offset='1'
+                    stopColor='#fec700'
+                />
+            </radialGradient>
+            <filter
+                id='gmeet-c'
+                width='166'
+                height='180'
+                x='45.91'
+                y='8'
+                colorInterpolationFilters='sRGB'
+                filterUnits='userSpaceOnUse'
+            >
+                <feFlood
+                    floodOpacity='0'
+                    result='BackgroundImageFix'
+                />
+                <feBlend
+                    in='SourceGraphic'
+                    in2='BackgroundImageFix'
+                    result='shape'
+                />
+                <feGaussianBlur
+                    result='effect1_foregroundBlur_37584_9338'
+                    stdDeviation='14'
+                />
+            </filter>
+        </defs>
     </svg>
 );
 
