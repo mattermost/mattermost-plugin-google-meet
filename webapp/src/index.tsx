@@ -2,8 +2,8 @@ import {createMeeting, getConfigStatus} from 'client/client';
 import manifest from 'manifest';
 import React from 'react';
 import type {Store} from 'redux';
+import {getAuthUserPreference} from 'utils/auth_user';
 import {postEphemeralMessage} from 'utils/ephemeral';
-import {getAuthUserPreference} from 'utils/meet_url';
 import {handleMeetingStarted} from 'websocket/meeting_started';
 
 import type {Channel} from '@mattermost/types/channels';

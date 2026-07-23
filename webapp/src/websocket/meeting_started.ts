@@ -1,9 +1,9 @@
 // Copyright (c) 2026-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
-import type {WebSocketMessage} from '@mattermost/client';
-
 import {getMeetingLinks, isAllowedGoogleMeetURL} from 'utils/meet_url';
+
+import type {WebSocketMessage} from '@mattermost/client';
 
 type MeetingStartedPayload = {
     meeting_url?: string;

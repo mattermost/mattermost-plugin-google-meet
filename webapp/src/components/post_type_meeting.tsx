@@ -3,11 +3,12 @@
 
 import React from 'react';
 import {useSelector} from 'react-redux';
+import {getAuthUserPreference} from 'utils/auth_user';
+import {getMeetingLinks} from 'utils/meet_url';
 
 import {makeStyleFromTheme} from 'mattermost-redux/utils/theme_utils';
 
 import ExternalLink from 'components/external_link';
-import {getAuthUserPreference, getMeetingLinks} from 'utils/meet_url';
 
 import {VideoCameraIcon} from './icons';
 
