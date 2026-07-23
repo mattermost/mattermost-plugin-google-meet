@@ -6,6 +6,7 @@ package command
 import (
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/mattermost/mattermost/server/public/model"
@@ -34,6 +35,7 @@ type MeetingStarter interface {
 	IsPluginConfigured() bool
 	IsUserAdmin(userID string) (bool, error)
 	GetPluginConfigureURL() string
+	SetAuthUser(userID string, authUser int) error
 	// AreSubscriptionsEnabled reports whether the conference polling/artifact features
 	// are turned on. When false, /meet subscription commands are refused because the
 	// readonly OAuth scope they rely on is not requested at connect time.
@@ -62,6 +64,10 @@ func NewCommandHandler(client *pluginapi.Client, meetingStarter MeetingStarter) 
 	autocompleteData.AddCommand(model.NewAutocompleteData("disconnect", "", "Disconnect your Google account"))
 	autocompleteData.AddCommand(model.NewAutocompleteData("help", "", "Show Google Meet command help"))
 
+	configCmd := model.NewAutocompleteData("config", "", "Configure your Google Meet preferences")
+	configCmd.AddCommand(model.NewAutocompleteData("authuser", "<number>", "Set the Google account index used by Meet links"))
+	autocompleteData.AddCommand(configCmd)
+
 	subCmd := model.NewAutocompleteData("subscription", "", "Manage channel subscriptions to Google Meet spaces")
 	subCmd.AddCommand(model.NewAutocompleteData("add", "<meeting-code-or-URL> [description]", "Subscribe this channel to a Google Meet space"))
 	subCmd.AddCommand(model.NewAutocompleteData("remove", "<meeting-code-or-URL>", "Unsubscribe this channel from a Google Meet space"))
@@ -77,7 +83,7 @@ func NewCommandHandler(client *pluginapi.Client, meetingStarter MeetingStarter) 
 		Trigger:              meetCommandTrigger,
 		AutoComplete:         true,
 		AutoCompleteDesc:     "Google Meet commands",
-		AutoCompleteHint:     "help | start [topic] | connect | disconnect",
+		AutoCompleteHint:     "help | start [topic] | connect | disconnect | config authuser <number> | subscription",
 		AutocompleteData:     autocompleteData,
 		AutocompleteIconData: iconData,
 	})
@@ -113,6 +119,8 @@ func (c *Handler) Handle(args *model.CommandArgs) (*model.CommandResponse, error
 			return c.executeMeetConnectCommand(args), nil
 		case "disconnect":
 			return c.executeMeetDisconnectCommand(args), nil
+		case "config":
+			return c.executeConfigCommand(args, fields[2:]), nil
 		case "subscription":
 			return c.executeSubscriptionCommand(args, fields[2:]), nil
 		default:
@@ -134,6 +142,7 @@ func (c *Handler) executeMeetHelpCommand() *model.CommandResponse {
 			"- `/meet start [topic]` starts a meeting with an optional topic.",
 			"- `/meet connect` opens the Google account connection flow.",
 			"- `/meet disconnect` removes your saved Google connection.",
+			"- `/meet config authuser <number>` sets the Google account index used when you open Meet links.",
 			"- `/meet subscription add <meeting-code-or-URL> [description]` subscribes this channel to a meeting space.",
 			"- `/meet subscription remove <meeting-code-or-URL>` unsubscribes this channel from a meeting space.",
 			"- `/meet subscription list` lists your active subscriptions.",
@@ -176,6 +185,34 @@ func (c *Handler) requireConnected(userID string) *model.CommandResponse {
 		return c.needsConnectResponse()
 	}
 	return nil
+}
+
+func (c *Handler) executeConfigCommand(args *model.CommandArgs, subFields []string) *model.CommandResponse {
+	if len(subFields) == 0 {
+		return c.ephemeral("Usage: `/meet config authuser <number>`.")
+	}
+
+	if subFields[0] != "authuser" {
+		return c.ephemeral(fmt.Sprintf("Unknown config setting: %s. Use `authuser`.", subFields[0]))
+	}
+
+	if len(subFields) != 2 {
+		return c.ephemeral("Usage: `/meet config authuser <number>`.")
+	}
+
+	authUser, err := strconv.Atoi(subFields[1])
+	if err != nil || authUser < 0 {
+		return c.ephemeral("The authuser value must be a non-negative whole number.")
+	}
+
+	if err := c.meetingStarter.SetAuthUser(args.UserId, authUser); err != nil {
+		if c.client != nil {
+			c.client.Log.Error("Failed to save authuser preference", "user_id", args.UserId, "error", err.Error())
+		}
+		return c.ephemeral("Failed to save your Google account preference. Please try again.")
+	}
+
+	return c.ephemeral(fmt.Sprintf("Google Meet links will now use account index **%d**.", authUser))
 }
 
 func (c *Handler) executeSubscriptionCommand(args *model.CommandArgs, subFields []string) *model.CommandResponse {

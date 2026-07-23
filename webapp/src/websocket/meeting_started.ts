@@ -3,27 +3,18 @@
 
 import type {WebSocketMessage} from '@mattermost/client';
 
+import {getMeetingLinks, isAllowedGoogleMeetURL} from 'utils/meet_url';
+
 type MeetingStartedPayload = {
     meeting_url?: string;
 };
 
-function isAllowedGoogleMeetURL(raw: string): boolean {
-    let u: URL;
-    try {
-        u = new URL(raw);
-    } catch {
-        return false;
-    }
-    if (u.protocol !== 'https:') {
-        return false;
-    }
-    return u.hostname === 'meet.google.com';
-}
-
-export function handleMeetingStarted(msg: WebSocketMessage<MeetingStartedPayload>): void {
+export function handleMeetingStarted(msg: WebSocketMessage<MeetingStartedPayload>, authUser = ''): void {
     const url = msg.data?.meeting_url;
     if (!url || typeof url !== 'string' || !isAllowedGoogleMeetURL(url)) {
         return;
     }
-    window.open(url, '_blank', 'noopener,noreferrer');
+
+    const {targetURL} = getMeetingLinks(url, authUser);
+    window.open(targetURL, '_blank', 'noopener,noreferrer');
 }

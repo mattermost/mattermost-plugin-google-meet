@@ -3,6 +3,7 @@ import manifest from 'manifest';
 import React from 'react';
 import type {Store} from 'redux';
 import {postEphemeralMessage} from 'utils/ephemeral';
+import {getAuthUserPreference} from 'utils/meet_url';
 import {handleMeetingStarted} from 'websocket/meeting_started';
 
 import type {Channel} from '@mattermost/types/channels';
@@ -33,7 +34,10 @@ export default class Plugin {
         registry.registerPostTypeComponent('custom_gmeet_transcript', PostTypeTranscript);
         registry.registerPostTypeComponent('custom_gmeet_recording', PostTypeRecording);
         registry.registerPostTypeComponent('custom_gmeet_smartnote', PostTypeSmartNote);
-        registry.registerWebSocketEventHandler(`custom_${manifest.id}_meeting_started`, handleMeetingStarted);
+        registry.registerWebSocketEventHandler<{meeting_url?: string}>(
+            `custom_${manifest.id}_meeting_started`,
+            (msg) => handleMeetingStarted(msg, getAuthUserPreference(store.getState())),
+        );
 
         if (!configured && !isAdmin) {
             return;
