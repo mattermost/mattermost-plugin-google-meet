@@ -105,15 +105,6 @@ const PostTypeMeeting = ({post, theme}: PostTypeMeetingProps) => {
         const startDate = new Date(post.create_at);
         const endMs = props.meeting_end_time ?? Date.now();
 
-        if (meetingLink) {
-            subtitle = (
-                <span>
-                    {'Meeting URL: '}
-                    <ExternalLink href={meetingLink}>{meetingLink}</ExternalLink>
-                </span>
-            );
-        }
-
         content = (
             <div>
                 <h2 style={style.summary}>{'Meeting Summary'}</h2>

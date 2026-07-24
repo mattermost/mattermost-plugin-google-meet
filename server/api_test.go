@@ -98,6 +98,18 @@ func (m *mockPluginAPI) CreatePost(post *model.Post) (*model.Post, *model.AppErr
 	return post, nil
 }
 
+func (m *mockPluginAPI) GetPost(postID string) (*model.Post, *model.AppError) {
+	if m.post != nil && m.post.Id == postID {
+		return m.post, nil
+	}
+	return nil, model.NewAppError("GetPost", "app.post.get.app_error", nil, "not found", http.StatusNotFound)
+}
+
+func (m *mockPluginAPI) UpdatePost(post *model.Post) (*model.Post, *model.AppError) {
+	m.post = post
+	return post, nil
+}
+
 func (m *mockPluginAPI) SendEphemeralPost(_ string, post *model.Post) *model.Post {
 	m.ephemeralPosts = append(m.ephemeralPosts, post)
 	return post

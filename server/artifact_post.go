@@ -57,7 +57,7 @@ func (p *Plugin) postConferenceStarted(sub *kvstore.Subscription, record *confer
 }
 
 // markMeetingEnded edits the meeting post to set "meeting_ended": true so the webapp
-// shows a summary instead of the Join button.
+// shows a summary instead of the Join button and meeting link.
 func (p *Plugin) markMeetingEnded(postID string, endTime *time.Time) error {
 	post, appErr := p.API.GetPost(postID)
 	if appErr != nil {
@@ -70,11 +70,48 @@ func (p *Plugin) markMeetingEnded(postID string, endTime *time.Time) error {
 	if endTime != nil {
 		post.Props["meeting_end_time"] = endTime.UnixMilli()
 	}
+	// Remove the join URL so clients (including mobile attachment fallback) cannot
+	// accidentally open an ended meeting.
+	delete(post.Props, "meeting_link")
+	if _, hasAttachments := post.Props["attachments"]; hasAttachments {
+		post.Props["attachments"] = []*model.SlackAttachment{{
+			Title:    meetingAttachmentTitle(post),
+			Text:     "The meeting has ended.",
+			Fallback: "The meeting has ended.",
+		}}
+	}
 	post.Message = "The meeting has ended."
 	if _, appErr = p.API.UpdatePost(post); appErr != nil {
 		return fmt.Errorf("failed to update post %s: %w", postID, appErr)
 	}
 	return nil
+}
+
+func meetingAttachmentTitle(post *model.Post) string {
+	if topic, ok := post.Props["meeting_topic"].(string); ok && strings.TrimSpace(topic) != "" {
+		return topic
+	}
+	if desc, ok := post.Props["description"].(string); ok && strings.TrimSpace(desc) != "" {
+		return desc
+	}
+	if attachments, ok := post.Props["attachments"].([]*model.SlackAttachment); ok {
+		for _, a := range attachments {
+			if a != nil && strings.TrimSpace(a.Title) != "" {
+				return a.Title
+			}
+		}
+	}
+	// After GetPost, attachments are often []any of map[string]any.
+	if raw, ok := post.Props["attachments"].([]any); ok {
+		for _, item := range raw {
+			if m, ok := item.(map[string]any); ok {
+				if title, ok := m["title"].(string); ok && strings.TrimSpace(title) != "" {
+					return title
+				}
+			}
+		}
+	}
+	return "Google Meet"
 }
 
 // postRecording creates a reply post in the thread for a recording artifact.
