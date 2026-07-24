@@ -5,6 +5,7 @@ package main
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -25,6 +26,27 @@ func TestConfiguration_PollInterval(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			c := &configuration{PollIntervalSeconds: tc.set}
 			assert.Equal(t, tc.want, c.pollInterval())
+		})
+	}
+}
+
+func TestConfiguration_ConferenceStartCooldown(t *testing.T) {
+	cases := []struct {
+		name string
+		set  int
+		want time.Duration
+	}{
+		{"unset disables the guard", 0, 0},
+		{"negative disables the guard", -5, 0},
+		{"positive value converts to hours", 12, 12 * time.Hour},
+		{"single hour", 1, time.Hour},
+		{"maximum safe value converts without overflow", maxConferenceStartCooldownHours, time.Duration(maxConferenceStartCooldownHours) * time.Hour},
+		{"overflowing value is clamped to maximum", maxConferenceStartCooldownHours + 1, time.Duration(maxConferenceStartCooldownHours) * time.Hour},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := &configuration{ConferenceStartCooldownHours: tc.set}
+			assert.Equal(t, tc.want, c.conferenceStartCooldown())
 		})
 	}
 }

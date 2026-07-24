@@ -32,6 +32,9 @@ type Subscription struct {
 	CreatedAt   time.Time `json:"created_at"`
 	// LastSeenConferenceStart is used to page forward through conferenceRecords.
 	LastSeenConferenceStart time.Time `json:"last_seen_conference_start"`
+	// LastConferenceEndTime is the most recent conference end observed on this space.
+	// It anchors the conference-start cooldown guard (quiet period since last activity).
+	LastConferenceEndTime time.Time `json:"last_conference_end_time,omitzero"`
 	// ActiveConferenceIDs are conference records we are still monitoring for artifacts.
 	ActiveConferenceIDs []string `json:"active_conference_ids,omitempty"`
 }
@@ -47,6 +50,9 @@ type ConferencePostState struct {
 	PostedTranscriptIDs []string `json:"posted_transcript_ids"`
 	PostedSmartNoteIDs  []string `json:"posted_smart_note_ids"`
 	MeetingEndedPosted  bool     `json:"meeting_ended_posted,omitempty"`
+	// Suppressed marks a conference that was recognized but not announced because it started
+	// within the cooldown window of the previous conference ending on the same space.
+	Suppressed bool `json:"suppressed,omitempty"`
 }
 
 // ArtifactThreadRoot returns the RootId to use when posting artifacts.
