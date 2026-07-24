@@ -123,6 +123,13 @@ func (p *Plugin) pollSubscription(store kvstore.KVStore, sub *kvstore.Subscripti
 		records = nil
 	}
 
+	cooldown := p.getConfiguration().conferenceStartCooldown()
+
+	endTimes := make(map[string]*time.Time, len(records))
+	for i := range records {
+		endTimes[records[i].Name] = records[i].EndTime
+	}
+
 	// Buffer the high-water mark advance until the entire batch succeeds.
 	// Advancing eagerly per-record would skip past a failed record whenever a
 	// later (newer) record in the same batch succeeded — the failed one is
@@ -140,6 +147,27 @@ func (p *Plugin) pollSubscription(store kvstore.KVStore, sub *kvstore.Subscripti
 			p.API.LogWarn("Failed to get conference post state", "conference", record.Name, "error", err.Error())
 			hadFailure = true
 			continue
+		}
+
+		if state == nil {
+			// Suppress the "started" notification if this conference began too soon after the
+			// previous one ended on the same space — most likely people rejoining a stale link
+			// rather than a genuinely new meeting.
+			if cooldown > 0 && record.StartTime != nil {
+				anchor := latestConferenceEndBefore(endTimes, record.Name, *record.StartTime, sub.LastConferenceEndTime)
+				if !anchor.IsZero() && record.StartTime.Sub(anchor) < cooldown {
+					p.API.LogInfo("Suppressing Google Meet conference notification within cooldown window", "conference", record.Name, "space_id", sub.SpaceID, "gap", record.StartTime.Sub(anchor).String())
+					state = &kvstore.ConferencePostState{
+						ChannelID:  sub.ChannelID,
+						Suppressed: true,
+					}
+					if err := store.StoreConferencePostState(record.Name, state); err != nil {
+						p.API.LogWarn("Failed to store suppressed conference post state; will retry on next poll", "conference", record.Name, "error", err.Error())
+						hadFailure = true
+						continue
+					}
+				}
+			}
 		}
 
 		if state == nil {
@@ -165,7 +193,7 @@ func (p *Plugin) pollSubscription(store kvstore.KVStore, sub *kvstore.Subscripti
 		if record.StartTime != nil && record.StartTime.After(candidateLastSeen) {
 			candidateLastSeen = *record.StartTime
 		}
-		if !slices.Contains(sub.ActiveConferenceIDs, record.Name) {
+		if !state.Suppressed && !slices.Contains(sub.ActiveConferenceIDs, record.Name) {
 			sub.ActiveConferenceIDs = append(sub.ActiveConferenceIDs, record.Name)
 			subChanged = true
 		}
@@ -175,22 +203,32 @@ func (p *Plugin) pollSubscription(store kvstore.KVStore, sub *kvstore.Subscripti
 		sub.LastSeenConferenceStart = candidateLastSeen
 		subChanged = true
 	}
+
+	for i := range records {
+		if records[i].EndTime != nil && records[i].EndTime.After(sub.LastConferenceEndTime) {
+			sub.LastConferenceEndTime = *records[i].EndTime
+			subChanged = true
+		}
+	}
+
 	if subChanged {
 		if err := store.StoreSubscription(sub); err != nil {
 			p.API.LogWarn("Failed to update subscription state", "space_id", sub.SpaceID, "error", err.Error())
 		}
 	}
-
-	endTimes := make(map[string]*time.Time, len(records))
-	for i := range records {
-		endTimes[records[i].Name] = records[i].EndTime
-	}
+	subChanged = false
 
 	stillActive := sub.ActiveConferenceIDs[:0]
 	for _, confName := range sub.ActiveConferenceIDs {
+		state, _ := store.GetConferencePostState(confName)
+		if state != nil && state.Suppressed {
+			// Defensive: suppressed conferences are never appended to ActiveConferenceIDs above,
+			// but skip them here too in case one was added before this guard existed.
+			continue
+		}
+
 		endTime := endTimes[confName]
 		if endTime == nil {
-			state, _ := store.GetConferencePostState(confName)
 			if state != nil && !state.MeetingEndedPosted {
 				if rec, fetchErr := p.getConferenceRecord(token, confName); fetchErr != nil {
 					p.API.LogWarn("Failed to fetch conference record for end-time check", "conference", confName, "error", fetchErr.Error())
@@ -199,16 +237,37 @@ func (p *Plugin) pollSubscription(store kvstore.KVStore, sub *kvstore.Subscripti
 				}
 			}
 		}
+		if endTime != nil && endTime.After(sub.LastConferenceEndTime) {
+			sub.LastConferenceEndTime = *endTime
+			subChanged = true
+		}
 		if done := p.pollConferenceArtifacts(store, token, confName, endTime); !done {
 			stillActive = append(stillActive, confName)
 		}
 	}
-	if len(stillActive) != len(sub.ActiveConferenceIDs) {
+	if len(stillActive) != len(sub.ActiveConferenceIDs) || subChanged {
 		sub.ActiveConferenceIDs = stillActive
 		if err := store.StoreSubscription(sub); err != nil {
 			p.API.LogWarn("Failed to persist pruned subscription state", "space_id", sub.SpaceID, "error", err.Error())
 		}
 	}
+}
+
+// latestConferenceEndBefore returns the most recent conference end time at or before cutoff,
+// considering both the persisted fallback (the subscription's last known conference end) and
+// any other fetched records (excluding selfName) whose end time is already known. It anchors
+// the conference-start cooldown guard.
+func latestConferenceEndBefore(endTimes map[string]*time.Time, selfName string, cutoff, fallback time.Time) time.Time {
+	anchor := fallback
+	for name, end := range endTimes {
+		if name == selfName || end == nil || end.IsZero() || end.After(cutoff) {
+			continue
+		}
+		if end.After(anchor) {
+			anchor = *end
+		}
+	}
+	return anchor
 }
 
 // pollConferenceArtifacts checks a single conference record for new recordings/transcripts/smart notes.

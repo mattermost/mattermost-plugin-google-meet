@@ -6,6 +6,7 @@ package main
 import (
 	"fmt"
 	"reflect"
+	"time"
 
 	"github.com/pkg/errors"
 
@@ -24,6 +25,7 @@ type configuration struct {
 	RestrictMeetingCreation       bool   `json:"RestrictMeetingCreation"`
 	EnableConferenceArtifactPosts bool   `json:"EnableConferenceArtifactPosts"`
 	PollIntervalSeconds           int    `json:"PollIntervalSeconds"`
+	ConferenceStartCooldownHours  int    `json:"ConferenceStartCooldownHours"`
 }
 
 func (c *configuration) pollInterval() int {
@@ -37,6 +39,16 @@ func (c *configuration) pollInterval() int {
 		return minPollIntervalSeconds
 	}
 	return c.PollIntervalSeconds
+}
+
+// conferenceStartCooldown returns how long after a conference ends a new conference on the
+// same space is suppressed from posting a "started" notification. A non-positive value
+// disables the guard entirely.
+func (c *configuration) conferenceStartCooldown() time.Duration {
+	if c.ConferenceStartCooldownHours <= 0 {
+		return 0
+	}
+	return time.Duration(c.ConferenceStartCooldownHours) * time.Hour
 }
 
 func (c *configuration) Clone() *configuration {

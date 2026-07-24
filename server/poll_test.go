@@ -204,6 +204,268 @@ func TestPollSubscription_StaleRecordNotRepostedAfterStateTTL(t *testing.T) {
 	assert.Empty(t, sub.ActiveConferenceIDs, "stale record should not be tracked as active")
 }
 
+// TestPollSubscription_CooldownSuppressesRejoin verifies that a conference starting shortly
+// after the previous one ended on the same space is not announced, addressing the case where
+// people reopen a stale meeting link right after the real meeting has ended.
+func TestPollSubscription_CooldownSuppressesRejoin(t *testing.T) {
+	now := time.Now().UTC()
+	token := &kvstore.OAuth2Token{
+		AccessToken: "test-token",
+		Expiry:      now.Add(time.Hour),
+	}
+
+	firstStart := now.Add(-2 * time.Hour)
+	firstEnd := firstStart.Add(30 * time.Minute)
+	rejoinStart := firstEnd.Add(10 * time.Minute) // well inside a 1-hour cooldown
+
+	var records []conferenceRecord
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v2/conferenceRecords" {
+			w.WriteHeader(http.StatusOK)
+			require.NoError(t, json.NewEncoder(w).Encode(map[string]any{"conferenceRecords": records}))
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		require.NoError(t, json.NewEncoder(w).Encode(map[string]any{}))
+	}))
+	defer server.Close()
+
+	origURL := googleMeetURL
+	origClient := httpClient
+	googleMeetURL = server.URL + "/v2"
+	httpClient = server.Client()
+	defer func() { googleMeetURL = origURL; httpClient = origClient }()
+
+	api := &mockPluginAPI{siteURL: "http://localhost:8065", captureAllPosts: true}
+	kv := newMockKVStore()
+	kv.tokens["user1"] = token
+
+	p := pollTestPlugin(t, api, kv)
+	p.configuration.ConferenceStartCooldownHours = 1
+
+	sub := &kvstore.Subscription{
+		SpaceID:                 "spaces/abc123",
+		MeetingCode:             "abc-mnop-xyz",
+		ChannelID:               "chan1",
+		CreatedBy:               "user1",
+		LastSeenConferenceStart: firstStart.Add(-time.Hour),
+	}
+
+	// First conference: nothing preceded it, so it always posts.
+	records = []conferenceRecord{{Name: "conferenceRecords/rec1", StartTime: &firstStart, EndTime: &firstEnd}}
+	p.pollSubscription(kv, sub)
+	require.Len(t, api.allPosts, 1)
+	assert.Equal(t, postTypeConference, api.allPosts[0].Type)
+
+	// Rejoin shortly after the first conference ended: should be suppressed. The anchor comes
+	// from the persisted LastConferenceEndTime, so rec1 need not be re-fetched here.
+	api.allPosts = nil
+	records = []conferenceRecord{
+		{Name: "conferenceRecords/rec2", StartTime: &rejoinStart},
+	}
+	p.pollSubscription(kv, sub)
+
+	assert.Empty(t, api.allPosts, "rejoin within cooldown should not be announced")
+
+	state, err := kv.GetConferencePostState("conferenceRecords/rec2")
+	require.NoError(t, err)
+	require.NotNil(t, state)
+	assert.True(t, state.Suppressed)
+	assert.NotContains(t, sub.ActiveConferenceIDs, "conferenceRecords/rec2")
+}
+
+// TestPollSubscription_CooldownAllowsAfterWindow verifies that a conference starting after the
+// cooldown window has elapsed since the previous one ended is announced normally.
+func TestPollSubscription_CooldownAllowsAfterWindow(t *testing.T) {
+	now := time.Now().UTC()
+	token := &kvstore.OAuth2Token{
+		AccessToken: "test-token",
+		Expiry:      now.Add(time.Hour),
+	}
+
+	firstStart := now.Add(-4 * time.Hour)
+	firstEnd := firstStart.Add(30 * time.Minute)
+	secondStart := firstEnd.Add(2 * time.Hour) // well outside a 1-hour cooldown
+
+	var records []conferenceRecord
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v2/conferenceRecords" {
+			w.WriteHeader(http.StatusOK)
+			require.NoError(t, json.NewEncoder(w).Encode(map[string]any{"conferenceRecords": records}))
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		require.NoError(t, json.NewEncoder(w).Encode(map[string]any{}))
+	}))
+	defer server.Close()
+
+	origURL := googleMeetURL
+	origClient := httpClient
+	googleMeetURL = server.URL + "/v2"
+	httpClient = server.Client()
+	defer func() { googleMeetURL = origURL; httpClient = origClient }()
+
+	api := &mockPluginAPI{siteURL: "http://localhost:8065", captureAllPosts: true}
+	kv := newMockKVStore()
+	kv.tokens["user1"] = token
+
+	p := pollTestPlugin(t, api, kv)
+	p.configuration.ConferenceStartCooldownHours = 1
+
+	sub := &kvstore.Subscription{
+		SpaceID:                 "spaces/abc123",
+		MeetingCode:             "abc-mnop-xyz",
+		ChannelID:               "chan1",
+		CreatedBy:               "user1",
+		LastSeenConferenceStart: firstStart.Add(-time.Hour),
+	}
+
+	records = []conferenceRecord{{Name: "conferenceRecords/rec1", StartTime: &firstStart, EndTime: &firstEnd}}
+	p.pollSubscription(kv, sub)
+	require.Len(t, api.allPosts, 1)
+
+	api.allPosts = nil
+	records = []conferenceRecord{
+		{Name: "conferenceRecords/rec2", StartTime: &secondStart},
+	}
+	p.pollSubscription(kv, sub)
+
+	require.Len(t, api.allPosts, 1, "conference starting after the cooldown window should be announced")
+	assert.Equal(t, postTypeConference, api.allPosts[0].Type)
+
+	state, err := kv.GetConferencePostState("conferenceRecords/rec2")
+	require.NoError(t, err)
+	require.NotNil(t, state)
+	assert.False(t, state.Suppressed)
+	assert.Contains(t, sub.ActiveConferenceIDs, "conferenceRecords/rec2")
+}
+
+// TestPollSubscription_CooldownDisabledPostsAlways verifies that ConferenceStartCooldownHours=0
+// restores the original always-announce behavior.
+func TestPollSubscription_CooldownDisabledPostsAlways(t *testing.T) {
+	now := time.Now().UTC()
+	token := &kvstore.OAuth2Token{
+		AccessToken: "test-token",
+		Expiry:      now.Add(time.Hour),
+	}
+
+	firstStart := now.Add(-2 * time.Hour)
+	firstEnd := firstStart.Add(30 * time.Minute)
+	rejoinStart := firstEnd.Add(time.Minute)
+
+	var records []conferenceRecord
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v2/conferenceRecords" {
+			w.WriteHeader(http.StatusOK)
+			require.NoError(t, json.NewEncoder(w).Encode(map[string]any{"conferenceRecords": records}))
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		require.NoError(t, json.NewEncoder(w).Encode(map[string]any{}))
+	}))
+	defer server.Close()
+
+	origURL := googleMeetURL
+	origClient := httpClient
+	googleMeetURL = server.URL + "/v2"
+	httpClient = server.Client()
+	defer func() { googleMeetURL = origURL; httpClient = origClient }()
+
+	api := &mockPluginAPI{siteURL: "http://localhost:8065", captureAllPosts: true}
+	kv := newMockKVStore()
+	kv.tokens["user1"] = token
+
+	// pollTestPlugin already leaves ConferenceStartCooldownHours unset (0), i.e. disabled.
+	p := pollTestPlugin(t, api, kv)
+
+	sub := &kvstore.Subscription{
+		SpaceID:                 "spaces/abc123",
+		MeetingCode:             "abc-mnop-xyz",
+		ChannelID:               "chan1",
+		CreatedBy:               "user1",
+		LastSeenConferenceStart: firstStart.Add(-time.Hour),
+	}
+
+	records = []conferenceRecord{{Name: "conferenceRecords/rec1", StartTime: &firstStart, EndTime: &firstEnd}}
+	p.pollSubscription(kv, sub)
+	require.Len(t, api.allPosts, 1)
+
+	api.allPosts = nil
+	records = []conferenceRecord{
+		{Name: "conferenceRecords/rec2", StartTime: &rejoinStart},
+	}
+	p.pollSubscription(kv, sub)
+
+	require.Len(t, api.allPosts, 1, "cooldown disabled should always announce new conferences")
+	assert.Equal(t, postTypeConference, api.allPosts[0].Type)
+}
+
+// TestPollSubscription_CooldownAnchoredOnEndNotStart verifies the cooldown is measured from the
+// previous conference's end, not its start. A single meeting can legitimately run longer than the
+// cooldown, so the start-to-start gap between two conferences must not be used as the anchor.
+func TestPollSubscription_CooldownAnchoredOnEndNotStart(t *testing.T) {
+	now := time.Now().UTC()
+	token := &kvstore.OAuth2Token{
+		AccessToken: "test-token",
+		Expiry:      now.Add(time.Hour),
+	}
+
+	cooldown := time.Hour
+	firstStart := now.Add(-6 * time.Hour)
+	firstEnd := firstStart.Add(3 * time.Hour) // long meeting: start-to-start gap will exceed cooldown
+	rejoinStart := firstEnd.Add(15 * time.Minute)
+
+	// Sanity-check the scenario: if the anchor were mistakenly the previous start, this rejoin
+	// would NOT be suppressed (gap from start > cooldown), even though it should be (gap from end < cooldown).
+	require.Greater(t, rejoinStart.Sub(firstStart), cooldown)
+	require.Less(t, rejoinStart.Sub(firstEnd), cooldown)
+
+	var records []conferenceRecord
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v2/conferenceRecords" {
+			w.WriteHeader(http.StatusOK)
+			require.NoError(t, json.NewEncoder(w).Encode(map[string]any{"conferenceRecords": records}))
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		require.NoError(t, json.NewEncoder(w).Encode(map[string]any{}))
+	}))
+	defer server.Close()
+
+	origURL := googleMeetURL
+	origClient := httpClient
+	googleMeetURL = server.URL + "/v2"
+	httpClient = server.Client()
+	defer func() { googleMeetURL = origURL; httpClient = origClient }()
+
+	api := &mockPluginAPI{siteURL: "http://localhost:8065", captureAllPosts: true}
+	kv := newMockKVStore()
+	kv.tokens["user1"] = token
+
+	p := pollTestPlugin(t, api, kv)
+	p.configuration.ConferenceStartCooldownHours = 1
+
+	sub := &kvstore.Subscription{
+		SpaceID:                 "spaces/abc123",
+		MeetingCode:             "abc-mnop-xyz",
+		ChannelID:               "chan1",
+		CreatedBy:               "user1",
+		LastSeenConferenceStart: firstStart.Add(-time.Hour),
+	}
+
+	records = []conferenceRecord{{Name: "conferenceRecords/rec1", StartTime: &firstStart, EndTime: &firstEnd}}
+	p.pollSubscription(kv, sub)
+	require.Len(t, api.allPosts, 1, "the long meeting itself always posts on first sight")
+
+	api.allPosts = nil
+	records = []conferenceRecord{
+		{Name: "conferenceRecords/rec2", StartTime: &rejoinStart},
+	}
+	p.pollSubscription(kv, sub)
+
+	assert.Empty(t, api.allPosts, "rejoin soon after the long meeting ended should be suppressed despite the large start-to-start gap")
+}
+
 func TestPollConferenceArtifacts_RecordingPostedOnce(t *testing.T) {
 	now := time.Now().UTC()
 	token := &kvstore.OAuth2Token{

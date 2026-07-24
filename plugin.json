@@ -64,6 +64,13 @@
                 "type": "number",
                 "help_text": "How often (in seconds) the plugin polls the Google Meet API for new recordings and transcripts. Minimum 30 seconds. Default 60.",
                 "default": 60
+            },
+            {
+                "key": "ConferenceStartCooldownHours",
+                "display_name": "Conference Start Cooldown (hours)",
+                "type": "number",
+                "help_text": "A new conference on a subscribed meeting space will not be announced if it starts within this many hours of the previous conference ending. Prevents duplicate conference-started posts when people rejoin a meeting link after it has ended. Set to 0 to disable. Default 12.",
+                "default": 12
             }
         ]
     }
