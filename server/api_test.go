@@ -99,10 +99,14 @@ func (m *mockPluginAPI) CreatePost(post *model.Post) (*model.Post, *model.AppErr
 }
 
 func (m *mockPluginAPI) GetPost(postID string) (*model.Post, *model.AppError) {
-	return &model.Post{Id: postID}, nil
+	if m.post != nil && m.post.Id == postID {
+		return m.post, nil
+	}
+	return nil, model.NewAppError("GetPost", "app.post.get.app_error", nil, "not found", http.StatusNotFound)
 }
 
 func (m *mockPluginAPI) UpdatePost(post *model.Post) (*model.Post, *model.AppError) {
+	m.post = post
 	return post, nil
 }
 
