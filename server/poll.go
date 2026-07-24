@@ -212,7 +212,7 @@ func (p *Plugin) pollSubscription(store kvstore.KVStore, sub *kvstore.Subscripti
 }
 
 // pollConferenceArtifacts checks a single conference record for new recordings/transcripts/smart notes.
-// If endTime is non-nil and in the past, the meeting post's Join button is removed (once).
+// If endTime is non-nil and in the past, the meeting post's Join button and link are removed (once).
 // Returns true only when the conference's KV state entry is missing (TTL expired), signalling
 // that the caller should prune it from ActiveConferenceIDs.
 func (p *Plugin) pollConferenceArtifacts(store kvstore.KVStore, token *kvstore.OAuth2Token, confName string, endTime *time.Time) bool {
