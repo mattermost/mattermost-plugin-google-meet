@@ -258,7 +258,14 @@ func (p *Plugin) pollSubscription(store kvstore.KVStore, sub *kvstore.Subscripti
 // any other fetched records (excluding selfName) whose end time is already known. It anchors
 // the conference-start cooldown guard.
 func latestConferenceEndBefore(endTimes map[string]*time.Time, selfName string, cutoff, fallback time.Time) time.Time {
-	anchor := fallback
+	// Only trust the persisted fallback when it precedes the cutoff. A fallback after
+	// cutoff means a previous cycle recorded this record's own end (e.g. a post-state
+	// persistence failure), which would otherwise produce a negative gap and wrongly
+	// suppress the genuine conference on retry.
+	var anchor time.Time
+	if !fallback.After(cutoff) {
+		anchor = fallback
+	}
 	for name, end := range endTimes {
 		if name == selfName || end == nil || end.IsZero() || end.After(cutoff) {
 			continue

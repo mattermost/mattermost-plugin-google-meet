@@ -146,6 +146,9 @@ type mockKVStore struct {
 	adHocPosts        map[string]*kvstore.AdHocMeetingPost
 	adHocIndex        []string
 	err               error
+	// storeConfStateErr, when set, makes StoreConferencePostState fail. Used to
+	// simulate a post-state persistence failure independent of other KV operations.
+	storeConfStateErr error
 }
 
 func newMockKVStore() *mockKVStore {
@@ -263,6 +266,9 @@ func (m *mockKVStore) ListUserSubscriptionSpaceIDs(userID string) ([]string, err
 }
 
 func (m *mockKVStore) StoreConferencePostState(name string, state *kvstore.ConferencePostState) error {
+	if m.storeConfStateErr != nil {
+		return m.storeConfStateErr
+	}
 	m.conferencePosts[name] = state
 	return nil
 }

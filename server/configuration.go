@@ -5,6 +5,7 @@ package main
 
 import (
 	"fmt"
+	"math"
 	"reflect"
 	"time"
 
@@ -17,6 +18,10 @@ const (
 	defaultPollIntervalSeconds = 60
 	minPollIntervalSeconds     = 30
 )
+
+// maxConferenceStartCooldownHours is the largest hour count that can be converted to a
+// time.Duration without overflowing int64 nanoseconds. Larger values are clamped to it.
+const maxConferenceStartCooldownHours = int(math.MaxInt64 / int64(time.Hour))
 
 type configuration struct {
 	GoogleClientID                string `json:"GoogleClientID"`
@@ -47,6 +52,9 @@ func (c *configuration) pollInterval() int {
 func (c *configuration) conferenceStartCooldown() time.Duration {
 	if c.ConferenceStartCooldownHours <= 0 {
 		return 0
+	}
+	if c.ConferenceStartCooldownHours > maxConferenceStartCooldownHours {
+		return time.Duration(maxConferenceStartCooldownHours) * time.Hour
 	}
 	return time.Duration(c.ConferenceStartCooldownHours) * time.Hour
 }

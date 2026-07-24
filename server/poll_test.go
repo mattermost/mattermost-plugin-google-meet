@@ -466,6 +466,80 @@ func TestPollSubscription_CooldownAnchoredOnEndNotStart(t *testing.T) {
 	assert.Empty(t, api.allPosts, "rejoin soon after the long meeting ended should be suppressed despite the large start-to-start gap")
 }
 
+// TestPollSubscription_RetryAfterPostStateFailureNotSuppressed is a regression test for the bug
+// where a conference whose ConferencePostState failed to persist would be wrongly suppressed on
+// retry. The failed cycle still advances the subscription's LastConferenceEndTime to the record's
+// own end (which is after its start), so on the next poll that persisted end must not be reused as
+// the cooldown anchor for the same record — otherwise the gap goes negative and the genuine
+// conference is silently dropped instead of retried.
+func TestPollSubscription_RetryAfterPostStateFailureNotSuppressed(t *testing.T) {
+	now := time.Now().UTC()
+	token := &kvstore.OAuth2Token{
+		AccessToken: "test-token",
+		Expiry:      now.Add(time.Hour),
+	}
+
+	start := now.Add(-2 * time.Hour)
+	end := start.Add(30 * time.Minute) // record's own end is after its start
+
+	var records []conferenceRecord
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v2/conferenceRecords" {
+			w.WriteHeader(http.StatusOK)
+			require.NoError(t, json.NewEncoder(w).Encode(map[string]any{"conferenceRecords": records}))
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		require.NoError(t, json.NewEncoder(w).Encode(map[string]any{}))
+	}))
+	defer server.Close()
+
+	origURL := googleMeetURL
+	origClient := httpClient
+	googleMeetURL = server.URL + "/v2"
+	httpClient = server.Client()
+	defer func() { googleMeetURL = origURL; httpClient = origClient }()
+
+	api := &mockPluginAPI{siteURL: "http://localhost:8065", captureAllPosts: true}
+	kv := newMockKVStore()
+	kv.tokens["user1"] = token
+
+	p := pollTestPlugin(t, api, kv)
+	p.configuration.ConferenceStartCooldownHours = 1
+
+	sub := &kvstore.Subscription{
+		SpaceID:                 "spaces/abc123",
+		MeetingCode:             "abc-mnop-xyz",
+		ChannelID:               "chan1",
+		CreatedBy:               "user1",
+		LastSeenConferenceStart: start.Add(-time.Hour),
+	}
+
+	// First poll: the post is created but persisting its state fails, so no state is stored and
+	// the watermark is not advanced. LastConferenceEndTime is still advanced to the record's end.
+	records = []conferenceRecord{{Name: "conferenceRecords/rec1", StartTime: &start, EndTime: &end}}
+	kv.storeConfStateErr = assert.AnError
+	p.pollSubscription(kv, sub)
+
+	state, err := kv.GetConferencePostState("conferenceRecords/rec1")
+	require.NoError(t, err)
+	require.Nil(t, state, "state should not have persisted after the simulated failure")
+	require.False(t, sub.LastConferenceEndTime.Before(end), "failed cycle still advances LastConferenceEndTime to the record end")
+
+	// Second poll (retry): persistence works again. The record's own end must not be reused as the
+	// cooldown anchor, so it should be posted and tracked rather than suppressed.
+	api.allPosts = nil
+	kv.storeConfStateErr = nil
+	p.pollSubscription(kv, sub)
+
+	state, err = kv.GetConferencePostState("conferenceRecords/rec1")
+	require.NoError(t, err)
+	require.NotNil(t, state)
+	assert.False(t, state.Suppressed, "retry of a genuine conference must not be suppressed")
+	assert.Contains(t, sub.ActiveConferenceIDs, "conferenceRecords/rec1", "retried conference must remain tracked for artifacts")
+	assert.NotEmpty(t, api.allPosts, "retry should announce the conference")
+}
+
 func TestPollConferenceArtifacts_RecordingPostedOnce(t *testing.T) {
 	now := time.Now().UTC()
 	token := &kvstore.OAuth2Token{

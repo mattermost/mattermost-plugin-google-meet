@@ -40,6 +40,8 @@ func TestConfiguration_ConferenceStartCooldown(t *testing.T) {
 		{"negative disables the guard", -5, 0},
 		{"positive value converts to hours", 12, 12 * time.Hour},
 		{"single hour", 1, time.Hour},
+		{"maximum safe value converts without overflow", maxConferenceStartCooldownHours, time.Duration(maxConferenceStartCooldownHours) * time.Hour},
+		{"overflowing value is clamped to maximum", maxConferenceStartCooldownHours + 1, time.Duration(maxConferenceStartCooldownHours) * time.Hour},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

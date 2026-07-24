@@ -34,7 +34,7 @@ type Subscription struct {
 	LastSeenConferenceStart time.Time `json:"last_seen_conference_start"`
 	// LastConferenceEndTime is the most recent conference end observed on this space.
 	// It anchors the conference-start cooldown guard (quiet period since last activity).
-	LastConferenceEndTime time.Time `json:"last_conference_end_time,omitempty"`
+	LastConferenceEndTime time.Time `json:"last_conference_end_time,omitzero"`
 	// ActiveConferenceIDs are conference records we are still monitoring for artifacts.
 	ActiveConferenceIDs []string `json:"active_conference_ids,omitempty"`
 }
