@@ -328,6 +328,11 @@ func (p *Plugin) pollConferenceArtifacts(store kvstore.KVStore, token *kvstore.O
 			p.API.LogWarn("Failed to post recording", "recording", rec.Name, "error", err.Error())
 			continue
 		}
+		if rec.DriveDestination != nil && rec.DriveDestination.ExportURI != "" {
+			if linkErr := p.appendMeetingArtifactLink(state.MeetingPostID, artifactLabelRecording, rec.DriveDestination.ExportURI); linkErr != nil {
+				p.API.LogWarn("Failed to append recording link to meeting post", "post_id", state.MeetingPostID, "error", linkErr.Error())
+			}
+		}
 		p.API.LogInfo("Posted recording to thread", "recording", rec.Name, "conference", confName, "thread_root_id", threadRootID)
 		state.PostedRecordingIDs = append(state.PostedRecordingIDs, rec.Name)
 		persistState()
@@ -349,6 +354,11 @@ func (p *Plugin) pollConferenceArtifacts(store kvstore.KVStore, token *kvstore.O
 			p.API.LogWarn("Failed to post transcript", "transcript", tr.Name, "error", err.Error())
 			continue
 		}
+		if tr.DocsDestination != nil && tr.DocsDestination.ExportURI != "" {
+			if linkErr := p.appendMeetingArtifactLink(state.MeetingPostID, artifactLabelTranscript, tr.DocsDestination.ExportURI); linkErr != nil {
+				p.API.LogWarn("Failed to append transcript link to meeting post", "post_id", state.MeetingPostID, "error", linkErr.Error())
+			}
+		}
 		p.API.LogInfo("Posted transcript to thread", "transcript", tr.Name, "conference", confName, "thread_root_id", threadRootID)
 		state.PostedTranscriptIDs = append(state.PostedTranscriptIDs, tr.Name)
 		persistState()
@@ -369,6 +379,11 @@ func (p *Plugin) pollConferenceArtifacts(store kvstore.KVStore, token *kvstore.O
 		if err = p.postSmartNote(state.ChannelID, threadRootID, sn); err != nil {
 			p.API.LogWarn("Failed to post smart note", "smart_note", sn.Name, "error", err.Error())
 			continue
+		}
+		if sn.DocsDestination != nil && sn.DocsDestination.ExportURI != "" {
+			if linkErr := p.appendMeetingArtifactLink(state.MeetingPostID, artifactLabelSmartNote, sn.DocsDestination.ExportURI); linkErr != nil {
+				p.API.LogWarn("Failed to append smart note link to meeting post", "post_id", state.MeetingPostID, "error", linkErr.Error())
+			}
 		}
 		p.API.LogInfo("Posted smart note to thread", "smart_note", sn.Name, "conference", confName, "thread_root_id", threadRootID)
 		state.PostedSmartNoteIDs = append(state.PostedSmartNoteIDs, sn.Name)

@@ -36,15 +36,23 @@ const getStyle = makeStyleFromTheme((theme: Record<string, string>) => {
             fontWeight: '600',
             lineHeight: '26px',
             margin: '0',
-            padding: '14px 0 0 0',
+            padding: '8px 0 0 0',
         },
         summaryItem: {
             fontFamily: 'Open Sans',
             fontSize: '14px',
             lineHeight: '26px',
         },
+        container: {
+            borderLeftColor: theme.sidebarHeaderBg,
+        },
     };
 });
+
+interface ArtifactLink {
+    label: string;
+    url: string;
+}
 
 interface PostTypeMeetingProps {
     post: {
@@ -57,9 +65,24 @@ interface PostTypeMeetingProps {
             description?: string;
             meeting_ended?: boolean;
             meeting_end_time?: number;
+            artifact_links?: ArtifactLink[] | Array<{label?: string; url?: string}>;
         };
     };
     theme: Record<string, string>;
+}
+
+function parseArtifactLinks(raw: PostTypeMeetingProps['post']['props']['artifact_links']): ArtifactLink[] {
+    if (!Array.isArray(raw)) {
+        return [];
+    }
+    return raw.flatMap((item) => {
+        const url = typeof item?.url === 'string' ? item.url.trim() : '';
+        if (!url) {
+            return [];
+        }
+        const label = typeof item?.label === 'string' && item.label.trim() ? item.label : 'Link';
+        return [{label, url}];
+    });
 }
 
 function formatDuration(startMs: number, endMs: number): string {
@@ -104,6 +127,7 @@ const PostTypeMeeting = ({post, theme}: PostTypeMeetingProps) => {
     if (meetingEnded) {
         const startDate = new Date(post.create_at);
         const endMs = props.meeting_end_time ?? Date.now();
+        const artifactLinks = parseArtifactLinks(props.artifact_links);
 
         content = (
             <div>
@@ -111,6 +135,15 @@ const PostTypeMeeting = ({post, theme}: PostTypeMeetingProps) => {
                 <span style={style.summaryItem}>{'Date: ' + formatDate(startDate)}</span>
                 <br/>
                 <span style={style.summaryItem}>{'Meeting Length: ' + formatDuration(startDate.getTime(), endMs)}</span>
+                {artifactLinks.length > 0 && (
+                    <ul style={{...style.summaryItem, margin: '8px 0 0 0', paddingLeft: '20px'}}>
+                        {artifactLinks.map((link) => (
+                            <li key={`${link.label}-${link.url}`}>
+                                <ExternalLink href={link.url}>{link.label}</ExternalLink>
+                            </li>
+                        ))}
+                    </ul>
+                )}
             </div>
         );
     } else if (meetingLink) {
@@ -142,7 +175,7 @@ const PostTypeMeeting = ({post, theme}: PostTypeMeetingProps) => {
             <div className='attachment__content'>
                 <div
                     className='clearfix attachment__container'
-                    style={{borderLeftColor: '#00832d'}}
+                    style={style.container}
                 >
                     <h5
                         className='mt-1'
