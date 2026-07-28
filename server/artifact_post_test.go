@@ -8,9 +8,10 @@ import (
 	"time"
 
 	"github.com/mattermost/mattermost/server/public/model"
-	"github.com/mattermost/mattermost-plugin-google-meet/server/store/kvstore"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/mattermost/mattermost-plugin-google-meet/server/store/kvstore"
 )
 
 func TestMarkMeetingEndedRemovesJoinLink(t *testing.T) {

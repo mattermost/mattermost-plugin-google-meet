@@ -22,7 +22,7 @@ const (
 	postTypeTranscript = "custom_gmeet_transcript"
 	postTypeSmartNote  = "custom_gmeet_smartnote"
 
-	artifactLabelRecording = "Recording link"
+	artifactLabelRecording  = "Recording link"
 	artifactLabelTranscript = "Transcript link"
 	artifactLabelSmartNote  = "Smart notes link"
 )
@@ -394,12 +394,10 @@ func (p *Plugin) postTranscript(token *kvstore.OAuth2Token, channelID, rootPostI
 		// Match the captions prop shape the mattermost-ai plugin expects.
 		post.AddProp("captions", []any{map[string]any{"file_id": fileIDs[0]}})
 	}
-	if tr.DocsDestination != nil {
-		post.AddProp("export_uri", tr.DocsDestination.ExportURI)
-	}
 	exportURI := ""
 	if tr.DocsDestination != nil {
 		exportURI = tr.DocsDestination.ExportURI
+		post.AddProp("export_uri", exportURI)
 	}
 	if attachment := artifactLinkAttachment(message, "View transcript in Google Docs", exportURI); attachment != nil {
 		post.AddProp("attachments", []*model.SlackAttachment{attachment})
