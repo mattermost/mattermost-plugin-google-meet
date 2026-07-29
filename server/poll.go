@@ -123,6 +123,13 @@ func (p *Plugin) pollSubscription(store kvstore.KVStore, sub *kvstore.Subscripti
 		records = nil
 	}
 
+	cooldown := p.getConfiguration().conferenceStartCooldown()
+
+	endTimes := make(map[string]*time.Time, len(records))
+	for i := range records {
+		endTimes[records[i].Name] = records[i].EndTime
+	}
+
 	// Buffer the high-water mark advance until the entire batch succeeds.
 	// Advancing eagerly per-record would skip past a failed record whenever a
 	// later (newer) record in the same batch succeeded — the failed one is
@@ -140,6 +147,27 @@ func (p *Plugin) pollSubscription(store kvstore.KVStore, sub *kvstore.Subscripti
 			p.API.LogWarn("Failed to get conference post state", "conference", record.Name, "error", err.Error())
 			hadFailure = true
 			continue
+		}
+
+		if state == nil {
+			// Suppress the "started" notification if this conference began too soon after the
+			// previous one ended on the same space — most likely people rejoining a stale link
+			// rather than a genuinely new meeting.
+			if cooldown > 0 && record.StartTime != nil {
+				anchor := latestConferenceEndBefore(endTimes, record.Name, *record.StartTime, sub.LastConferenceEndTime)
+				if !anchor.IsZero() && record.StartTime.Sub(anchor) < cooldown {
+					p.API.LogInfo("Suppressing Google Meet conference notification within cooldown window", "conference", record.Name, "space_id", sub.SpaceID, "gap", record.StartTime.Sub(anchor).String())
+					state = &kvstore.ConferencePostState{
+						ChannelID:  sub.ChannelID,
+						Suppressed: true,
+					}
+					if err := store.StoreConferencePostState(record.Name, state); err != nil {
+						p.API.LogWarn("Failed to store suppressed conference post state; will retry on next poll", "conference", record.Name, "error", err.Error())
+						hadFailure = true
+						continue
+					}
+				}
+			}
 		}
 
 		if state == nil {
@@ -165,7 +193,7 @@ func (p *Plugin) pollSubscription(store kvstore.KVStore, sub *kvstore.Subscripti
 		if record.StartTime != nil && record.StartTime.After(candidateLastSeen) {
 			candidateLastSeen = *record.StartTime
 		}
-		if !slices.Contains(sub.ActiveConferenceIDs, record.Name) {
+		if !state.Suppressed && !slices.Contains(sub.ActiveConferenceIDs, record.Name) {
 			sub.ActiveConferenceIDs = append(sub.ActiveConferenceIDs, record.Name)
 			subChanged = true
 		}
@@ -175,22 +203,32 @@ func (p *Plugin) pollSubscription(store kvstore.KVStore, sub *kvstore.Subscripti
 		sub.LastSeenConferenceStart = candidateLastSeen
 		subChanged = true
 	}
+
+	for i := range records {
+		if records[i].EndTime != nil && records[i].EndTime.After(sub.LastConferenceEndTime) {
+			sub.LastConferenceEndTime = *records[i].EndTime
+			subChanged = true
+		}
+	}
+
 	if subChanged {
 		if err := store.StoreSubscription(sub); err != nil {
 			p.API.LogWarn("Failed to update subscription state", "space_id", sub.SpaceID, "error", err.Error())
 		}
 	}
-
-	endTimes := make(map[string]*time.Time, len(records))
-	for i := range records {
-		endTimes[records[i].Name] = records[i].EndTime
-	}
+	subChanged = false
 
 	stillActive := sub.ActiveConferenceIDs[:0]
 	for _, confName := range sub.ActiveConferenceIDs {
+		state, _ := store.GetConferencePostState(confName)
+		if state != nil && state.Suppressed {
+			// Defensive: suppressed conferences are never appended to ActiveConferenceIDs above,
+			// but skip them here too in case one was added before this guard existed.
+			continue
+		}
+
 		endTime := endTimes[confName]
 		if endTime == nil {
-			state, _ := store.GetConferencePostState(confName)
 			if state != nil && !state.MeetingEndedPosted {
 				if rec, fetchErr := p.getConferenceRecord(token, confName); fetchErr != nil {
 					p.API.LogWarn("Failed to fetch conference record for end-time check", "conference", confName, "error", fetchErr.Error())
@@ -199,11 +237,15 @@ func (p *Plugin) pollSubscription(store kvstore.KVStore, sub *kvstore.Subscripti
 				}
 			}
 		}
+		if endTime != nil && endTime.After(sub.LastConferenceEndTime) {
+			sub.LastConferenceEndTime = *endTime
+			subChanged = true
+		}
 		if done := p.pollConferenceArtifacts(store, token, confName, endTime); !done {
 			stillActive = append(stillActive, confName)
 		}
 	}
-	if len(stillActive) != len(sub.ActiveConferenceIDs) {
+	if len(stillActive) != len(sub.ActiveConferenceIDs) || subChanged {
 		sub.ActiveConferenceIDs = stillActive
 		if err := store.StoreSubscription(sub); err != nil {
 			p.API.LogWarn("Failed to persist pruned subscription state", "space_id", sub.SpaceID, "error", err.Error())
@@ -211,8 +253,32 @@ func (p *Plugin) pollSubscription(store kvstore.KVStore, sub *kvstore.Subscripti
 	}
 }
 
+// latestConferenceEndBefore returns the most recent conference end time at or before cutoff,
+// considering both the persisted fallback (the subscription's last known conference end) and
+// any other fetched records (excluding selfName) whose end time is already known. It anchors
+// the conference-start cooldown guard.
+func latestConferenceEndBefore(endTimes map[string]*time.Time, selfName string, cutoff, fallback time.Time) time.Time {
+	// Only trust the persisted fallback when it precedes the cutoff. A fallback after
+	// cutoff means a previous cycle recorded this record's own end (e.g. a post-state
+	// persistence failure), which would otherwise produce a negative gap and wrongly
+	// suppress the genuine conference on retry.
+	var anchor time.Time
+	if !fallback.After(cutoff) {
+		anchor = fallback
+	}
+	for name, end := range endTimes {
+		if name == selfName || end == nil || end.IsZero() || end.After(cutoff) {
+			continue
+		}
+		if end.After(anchor) {
+			anchor = *end
+		}
+	}
+	return anchor
+}
+
 // pollConferenceArtifacts checks a single conference record for new recordings/transcripts/smart notes.
-// If endTime is non-nil and in the past, the meeting post's Join button is removed (once).
+// If endTime is non-nil and in the past, the meeting post's Join button and link are removed (once).
 // Returns true only when the conference's KV state entry is missing (TTL expired), signalling
 // that the caller should prune it from ActiveConferenceIDs.
 func (p *Plugin) pollConferenceArtifacts(store kvstore.KVStore, token *kvstore.OAuth2Token, confName string, endTime *time.Time) bool {
@@ -262,6 +328,11 @@ func (p *Plugin) pollConferenceArtifacts(store kvstore.KVStore, token *kvstore.O
 			p.API.LogWarn("Failed to post recording", "recording", rec.Name, "error", err.Error())
 			continue
 		}
+		if rec.DriveDestination != nil && rec.DriveDestination.ExportURI != "" {
+			if linkErr := p.appendMeetingArtifactLink(state.MeetingPostID, artifactLabelRecording, rec.DriveDestination.ExportURI); linkErr != nil {
+				p.API.LogWarn("Failed to append recording link to meeting post", "post_id", state.MeetingPostID, "error", linkErr.Error())
+			}
+		}
 		p.API.LogInfo("Posted recording to thread", "recording", rec.Name, "conference", confName, "thread_root_id", threadRootID)
 		state.PostedRecordingIDs = append(state.PostedRecordingIDs, rec.Name)
 		persistState()
@@ -283,6 +354,11 @@ func (p *Plugin) pollConferenceArtifacts(store kvstore.KVStore, token *kvstore.O
 			p.API.LogWarn("Failed to post transcript", "transcript", tr.Name, "error", err.Error())
 			continue
 		}
+		if tr.DocsDestination != nil && tr.DocsDestination.ExportURI != "" {
+			if linkErr := p.appendMeetingArtifactLink(state.MeetingPostID, artifactLabelTranscript, tr.DocsDestination.ExportURI); linkErr != nil {
+				p.API.LogWarn("Failed to append transcript link to meeting post", "post_id", state.MeetingPostID, "error", linkErr.Error())
+			}
+		}
 		p.API.LogInfo("Posted transcript to thread", "transcript", tr.Name, "conference", confName, "thread_root_id", threadRootID)
 		state.PostedTranscriptIDs = append(state.PostedTranscriptIDs, tr.Name)
 		persistState()
@@ -303,6 +379,11 @@ func (p *Plugin) pollConferenceArtifacts(store kvstore.KVStore, token *kvstore.O
 		if err = p.postSmartNote(state.ChannelID, threadRootID, sn); err != nil {
 			p.API.LogWarn("Failed to post smart note", "smart_note", sn.Name, "error", err.Error())
 			continue
+		}
+		if sn.DocsDestination != nil && sn.DocsDestination.ExportURI != "" {
+			if linkErr := p.appendMeetingArtifactLink(state.MeetingPostID, artifactLabelSmartNote, sn.DocsDestination.ExportURI); linkErr != nil {
+				p.API.LogWarn("Failed to append smart note link to meeting post", "post_id", state.MeetingPostID, "error", linkErr.Error())
+			}
 		}
 		p.API.LogInfo("Posted smart note to thread", "smart_note", sn.Name, "conference", confName, "thread_root_id", threadRootID)
 		state.PostedSmartNoteIDs = append(state.PostedSmartNoteIDs, sn.Name)

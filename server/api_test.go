@@ -98,6 +98,18 @@ func (m *mockPluginAPI) CreatePost(post *model.Post) (*model.Post, *model.AppErr
 	return post, nil
 }
 
+func (m *mockPluginAPI) GetPost(postID string) (*model.Post, *model.AppError) {
+	if m.post != nil && m.post.Id == postID {
+		return m.post, nil
+	}
+	return nil, model.NewAppError("GetPost", "app.post.get.app_error", nil, "not found", http.StatusNotFound)
+}
+
+func (m *mockPluginAPI) UpdatePost(post *model.Post) (*model.Post, *model.AppError) {
+	m.post = post
+	return post, nil
+}
+
 func (m *mockPluginAPI) SendEphemeralPost(_ string, post *model.Post) *model.Post {
 	m.ephemeralPosts = append(m.ephemeralPosts, post)
 	return post
@@ -134,6 +146,9 @@ type mockKVStore struct {
 	adHocPosts        map[string]*kvstore.AdHocMeetingPost
 	adHocIndex        []string
 	err               error
+	// storeConfStateErr, when set, makes StoreConferencePostState fail. Used to
+	// simulate a post-state persistence failure independent of other KV operations.
+	storeConfStateErr error
 }
 
 func newMockKVStore() *mockKVStore {
@@ -251,6 +266,9 @@ func (m *mockKVStore) ListUserSubscriptionSpaceIDs(userID string) ([]string, err
 }
 
 func (m *mockKVStore) StoreConferencePostState(name string, state *kvstore.ConferencePostState) error {
+	if m.storeConfStateErr != nil {
+		return m.storeConfStateErr
+	}
 	m.conferencePosts[name] = state
 	return nil
 }

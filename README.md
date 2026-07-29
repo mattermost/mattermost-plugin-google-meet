@@ -126,6 +126,7 @@ In the Mattermost System Console, configure:
 - `Restrict Meeting Creation`: when enabled, users can only create meetings in private channels, group messages, and direct messages.
 - `Post Recordings, Transcripts and Smart Notes`: enables the background poller that watches subscribed and ad-hoc meetings and posts artifacts as thread replies. Default: enabled.
 - `Polling Interval (seconds)`: how often the poller checks Google for new conferences and artifacts. Default: 60 seconds. Minimum: 30 seconds.
+- `Conference Start Cooldown (hours)`: suppresses a "conference started" post on a subscribed space if it starts within this many hours of the previous conference ending on that space — avoids re-announcing when people reopen a meeting link after it has ended. Default: 12 hours. Set to `0` to disable.
 
 Important notes:
 
@@ -166,6 +167,10 @@ When enabled, the plugin runs a background poller that watches subscribed Meet s
 ### `PollIntervalSeconds`
 
 How often (in seconds) the plugin polls Google for new conferences and artifacts. Minimum 30. Default 60. Only used when `EnableConferenceArtifactPosts` is enabled.
+
+### `ConferenceStartCooldownHours`
+
+Google Meet spaces are permanent links with no scheduling metadata, so the plugin cannot tell whether a new conference on a subscribed space is a genuinely new meeting or just someone reopening the link after the real meeting ended. To avoid spamming the channel in the latter case, a new conference is not announced if it starts within this many hours of the *previous* conference ending on the same space. The cooldown is anchored to the previous conference's end time (not its start), so a single long-running meeting is never suppressed. Default 12 hours. Set to `0` to disable the guard and always announce new conferences. Only used when `EnableConferenceArtifactPosts` is enabled.
 
 ## Development
 
