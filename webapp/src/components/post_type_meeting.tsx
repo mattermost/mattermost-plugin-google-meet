@@ -2,6 +2,9 @@
 // See LICENSE.txt for license information.
 
 import React from 'react';
+import {useSelector} from 'react-redux';
+import {getAuthUserPreference} from 'utils/auth_user';
+import {getMeetingLinks} from 'utils/meet_url';
 
 import {makeStyleFromTheme} from 'mattermost-redux/utils/theme_utils';
 
@@ -104,8 +107,10 @@ function formatDate(date: Date): string {
 const PostTypeMeeting = ({post, theme}: PostTypeMeetingProps) => {
     const style = getStyle(theme);
     const props = post.props || {};
+    const authUser = useSelector(getAuthUserPreference);
 
-    const meetingLink = props.meeting_link || (props.meeting_code ? `https://meet.google.com/${props.meeting_code}` : '');
+    const rawMeetingLink = props.meeting_link || (props.meeting_code ? `https://meet.google.com/${props.meeting_code}` : '');
+    const {displayURL: meetingLink, targetURL: meetingTarget} = getMeetingLinks(rawMeetingLink, authUser);
     const meetingEnded = Boolean(props.meeting_ended);
     const title = props.meeting_topic || (props.description?.trim()) || 'Google Meet';
 
@@ -150,7 +155,7 @@ const PostTypeMeeting = ({post, theme}: PostTypeMeetingProps) => {
         subtitle = (
             <span>
                 {'Meeting URL: '}
-                <ExternalLink href={meetingLink}>{meetingLink}</ExternalLink>
+                <ExternalLink href={meetingTarget}>{meetingLink}</ExternalLink>
             </span>
         );
 
@@ -158,7 +163,7 @@ const PostTypeMeeting = ({post, theme}: PostTypeMeetingProps) => {
             <ExternalLink
                 className='btn btn-primary'
                 style={style.button}
-                href={meetingLink}
+                href={meetingTarget}
                 aria-label='Join meeting'
             >
                 <VideoCameraIcon/>

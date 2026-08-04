@@ -54,6 +54,9 @@ type mockMeetingStarter struct {
 	adminErr              error
 	disconnectErr         error
 	disconnectedID        string
+	setAuthUserErr        error
+	authUserID            string
+	authUser              int
 	startedMeeting        struct {
 		userID     string
 		channelID  string
@@ -89,6 +92,12 @@ func (m *mockMeetingStarter) IsUserConnected(_ string) (bool, error) {
 
 func (m *mockMeetingStarter) IsUserAdmin(_ string) (bool, error) {
 	return m.isAdmin, m.adminErr
+}
+
+func (m *mockMeetingStarter) SetAuthUser(userID string, authUser int) error {
+	m.authUserID = userID
+	m.authUser = authUser
+	return m.setAuthUserErr
 }
 
 func (m *mockMeetingStarter) AreSubscriptionsEnabled() bool { return !m.subscriptionsDisabled }
@@ -234,6 +243,7 @@ func TestExecuteMeetCommand_Help(t *testing.T) {
 	assert.Contains(t, resp.Text, "/meet start [topic]")
 	assert.Contains(t, resp.Text, "/meet connect")
 	assert.Contains(t, resp.Text, "/meet disconnect")
+	assert.Contains(t, resp.Text, "/meet config authuser <number>")
 	assert.Contains(t, resp.Text, "/meet help")
 	assert.Empty(t, mock.startedMeeting.userID)
 }
@@ -327,6 +337,84 @@ func TestExecuteMeetCommand_DisconnectError(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, resp.Text, "Failed to disconnect")
 	assert.Equal(t, "user1", mock.disconnectedID)
+}
+
+func TestConfigCommand_AuthUserSuccess(t *testing.T) {
+	mock := &mockMeetingStarter{}
+	handler := &Handler{meetingStarter: mock}
+
+	resp, err := handler.Handle(&model.CommandArgs{
+		Command: "/meet config authuser 1",
+		UserId:  "user1",
+	})
+	require.NoError(t, err)
+	assert.Contains(t, resp.Text, "account index **1**")
+	assert.Equal(t, "user1", mock.authUserID)
+	assert.Equal(t, 1, mock.authUser)
+}
+
+func TestConfigCommand_AuthUserZero(t *testing.T) {
+	mock := &mockMeetingStarter{}
+	handler := &Handler{meetingStarter: mock}
+
+	resp, err := handler.Handle(&model.CommandArgs{
+		Command: "/meet config authuser 0",
+		UserId:  "user1",
+	})
+	require.NoError(t, err)
+	assert.Contains(t, resp.Text, "account index **0**")
+	assert.Equal(t, "user1", mock.authUserID)
+	assert.Equal(t, 0, mock.authUser)
+}
+
+func TestConfigCommand_InvalidAuthUser(t *testing.T) {
+	for _, commandText := range []string{
+		"/meet config",
+		"/meet config authuser",
+		"/meet config authuser -1",
+		"/meet config authuser 1.5",
+		"/meet config authuser one",
+		"/meet config authuser 1 extra",
+	} {
+		t.Run(commandText, func(t *testing.T) {
+			mock := &mockMeetingStarter{}
+			handler := &Handler{meetingStarter: mock}
+
+			resp, err := handler.Handle(&model.CommandArgs{
+				Command: commandText,
+				UserId:  "user1",
+			})
+			require.NoError(t, err)
+			assert.NotEmpty(t, resp.Text)
+			assert.Empty(t, mock.authUserID)
+		})
+	}
+}
+
+func TestConfigCommand_UnknownSetting(t *testing.T) {
+	mock := &mockMeetingStarter{}
+	handler := &Handler{meetingStarter: mock}
+
+	resp, err := handler.Handle(&model.CommandArgs{
+		Command: "/meet config timezone 1",
+		UserId:  "user1",
+	})
+	require.NoError(t, err)
+	assert.Contains(t, resp.Text, "Unknown config setting")
+	assert.Empty(t, mock.authUserID)
+}
+
+func TestConfigCommand_AuthUserStorageError(t *testing.T) {
+	mock := &mockMeetingStarter{setAuthUserErr: errors.New("preference error")}
+	handler := &Handler{meetingStarter: mock}
+
+	resp, err := handler.Handle(&model.CommandArgs{
+		Command: "/meet config authuser 1",
+		UserId:  "user1",
+	})
+	require.NoError(t, err)
+	assert.Contains(t, resp.Text, "Failed to save")
+	assert.NotContains(t, resp.Text, "preference error")
 }
 
 func TestExecuteMeetCommand_UnknownSubcommandShowsHelp(t *testing.T) {
