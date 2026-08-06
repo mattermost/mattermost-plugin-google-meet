@@ -42,6 +42,7 @@
                 "display_name": "Encryption Key",
                 "type": "generated",
                 "help_text": "A secret key used to encrypt OAuth tokens stored in the database. Regenerating this key will invalidate all existing user connections.",
+                "secret": true,
                 "default": ""
             },
             {
