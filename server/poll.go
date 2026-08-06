@@ -4,13 +4,26 @@
 package main
 
 import (
+	"errors"
+	"fmt"
 	"slices"
 	"time"
 
+	"github.com/mattermost/mattermost/server/public/model"
 	"github.com/mattermost/mattermost/server/public/pluginapi/cluster"
 
 	"github.com/mattermost/mattermost-plugin-google-meet/server/store/kvstore"
 )
+
+// conferenceRejoinGrace delays marking a calendar-bound meeting post as ended until this long
+// after the last known record end, so a brief drop-and-rejoin within the same calendar event
+// instance doesn't flip the post to "ended" and back.
+const conferenceRejoinGrace = 1 * time.Minute
+
+// eventBindingRetention is added to a calendar instance's scheduled end when computing an
+// EventPostBinding's ExpiresAt, giving artifacts (which can post minutes after the meeting ends)
+// room to still find the binding before it is pruned.
+const eventBindingRetention = 24 * time.Hour
 
 // startPoller launches the background polling goroutine.
 // It is safe to call from OnActivate; the goroutine is stopped via stopPoller.
@@ -117,13 +130,16 @@ func (p *Plugin) pollSubscription(store kvstore.KVStore, sub *kvstore.Subscripti
 		return
 	}
 
+	subChanged := p.processDueScheduledAnnouncements(store, sub, token)
+	if pruneExpiredEventBindings(sub) {
+		subChanged = true
+	}
+
 	records, err := p.listConferenceRecords(token, sub.SpaceID, sub.LastSeenConferenceStart)
 	if err != nil {
 		p.API.LogWarn("Failed to list conference records", "space_id", sub.SpaceID, "error", err.Error())
 		records = nil
 	}
-
-	cooldown := p.getConfiguration().conferenceStartCooldown()
 
 	endTimes := make(map[string]*time.Time, len(records))
 	for i := range records {
@@ -138,7 +154,6 @@ func (p *Plugin) pollSubscription(store kvstore.KVStore, sub *kvstore.Subscripti
 	// polled even on partial-batch failure.
 	hadFailure := false
 	candidateLastSeen := sub.LastSeenConferenceStart
-	subChanged := false
 
 	for i := range records {
 		record := &records[i]
@@ -150,41 +165,24 @@ func (p *Plugin) pollSubscription(store kvstore.KVStore, sub *kvstore.Subscripti
 		}
 
 		if state == nil {
-			// Suppress the "started" notification if this conference began too soon after the
-			// previous one ended on the same space — most likely people rejoining a stale link
-			// rather than a genuinely new meeting.
-			if cooldown > 0 && record.StartTime != nil {
-				anchor := latestConferenceEndBefore(endTimes, record.Name, *record.StartTime, sub.LastConferenceEndTime)
-				if !anchor.IsZero() && record.StartTime.Sub(anchor) < cooldown {
-					p.API.LogInfo("Suppressing Google Meet conference notification within cooldown window", "conference", record.Name, "space_id", sub.SpaceID, "gap", record.StartTime.Sub(anchor).String())
-					state = &kvstore.ConferencePostState{
-						ChannelID:  sub.ChannelID,
-						Suppressed: true,
-					}
-					if err := store.StoreConferencePostState(record.Name, state); err != nil {
-						p.API.LogWarn("Failed to store suppressed conference post state; will retry on next poll", "conference", record.Name, "error", err.Error())
-						hadFailure = true
-						continue
-					}
-				}
-			}
-		}
-
-		if state == nil {
-			postID, err := p.postConferenceStarted(sub, record)
+			deferred, err := p.classifyNewConference(store, sub, token, record, endTimes)
 			if err != nil {
-				p.API.LogWarn("Failed to post conference started", "conference", record.Name, "error", err.Error())
+				p.API.LogWarn("Failed to classify new conference", "conference", record.Name, "error", err.Error())
 				hadFailure = true
 				continue
 			}
-			p.API.LogInfo("Posted new Google Meet conference notification", "conference", record.Name, "space_id", sub.SpaceID, "channel_id", sub.ChannelID, "meeting_post_id", postID)
-			state = &kvstore.ConferencePostState{
-				MeetingPostID: postID,
-				ThreadRootID:  postID,
-				ChannelID:     sub.ChannelID,
+			subChanged = true
+			if deferred {
+				// Nothing posted yet: advance the watermark so this record isn't re-fetched,
+				// but skip ActiveConferenceIDs tracking until it either posts or is dropped.
+				if record.StartTime != nil && record.StartTime.After(candidateLastSeen) {
+					candidateLastSeen = *record.StartTime
+				}
+				continue
 			}
-			if err := store.StoreConferencePostState(record.Name, state); err != nil {
-				p.API.LogWarn("Failed to store conference post state; will retry on next poll", "conference", record.Name, "error", err.Error())
+			state, err = store.GetConferencePostState(record.Name)
+			if err != nil || state == nil {
+				p.API.LogWarn("Conference post state missing right after classification", "conference", record.Name, "error", err)
 				hadFailure = true
 				continue
 			}
@@ -218,6 +216,31 @@ func (p *Plugin) pollSubscription(store kvstore.KVStore, sub *kvstore.Subscripti
 	}
 	subChanged = false
 
+	// Pass 1: resolve (or fetch) the end time of every tracked conference so binding-level
+	// end decisions in pass 2 can see all of a calendar instance's records at once, not just
+	// the one currently being visited.
+	resolvedEnd := make(map[string]*time.Time, len(sub.ActiveConferenceIDs))
+	for _, confName := range sub.ActiveConferenceIDs {
+		state, _ := store.GetConferencePostState(confName)
+		if state != nil && state.Suppressed {
+			continue
+		}
+		endTime := endTimes[confName]
+		if endTime == nil && state != nil && !state.MeetingEndedPosted {
+			if rec, fetchErr := p.getConferenceRecord(token, confName); fetchErr != nil {
+				p.API.LogWarn("Failed to fetch conference record for end-time check", "conference", confName, "error", fetchErr.Error())
+			} else if rec != nil {
+				endTime = rec.EndTime
+			}
+		}
+		resolvedEnd[confName] = endTime
+		if endTime != nil && endTime.After(sub.LastConferenceEndTime) {
+			sub.LastConferenceEndTime = *endTime
+			subChanged = true
+		}
+	}
+
+	// Pass 2: apply end-of-meeting decisions and poll artifacts.
 	stillActive := sub.ActiveConferenceIDs[:0]
 	for _, confName := range sub.ActiveConferenceIDs {
 		state, _ := store.GetConferencePostState(confName)
@@ -227,21 +250,14 @@ func (p *Plugin) pollSubscription(store kvstore.KVStore, sub *kvstore.Subscripti
 			continue
 		}
 
-		endTime := endTimes[confName]
-		if endTime == nil {
-			if state != nil && !state.MeetingEndedPosted {
-				if rec, fetchErr := p.getConferenceRecord(token, confName); fetchErr != nil {
-					p.API.LogWarn("Failed to fetch conference record for end-time check", "conference", confName, "error", fetchErr.Error())
-				} else if rec != nil {
-					endTime = rec.EndTime
-				}
+		if state != nil && p.maybeMarkConferenceEnded(sub, state, confName, resolvedEnd) {
+			if err := store.StoreConferencePostState(confName, state); err != nil {
+				p.API.LogWarn("Failed to persist meeting-ended state", "conference", confName, "error", err.Error())
 			}
-		}
-		if endTime != nil && endTime.After(sub.LastConferenceEndTime) {
-			sub.LastConferenceEndTime = *endTime
 			subChanged = true
 		}
-		if done := p.pollConferenceArtifacts(store, token, confName, endTime); !done {
+
+		if done := p.pollConferenceArtifacts(store, token, confName); !done {
 			stillActive = append(stillActive, confName)
 		}
 	}
@@ -250,6 +266,313 @@ func (p *Plugin) pollSubscription(store kvstore.KVStore, sub *kvstore.Subscripti
 		if err := store.StoreSubscription(sub); err != nil {
 			p.API.LogWarn("Failed to persist pruned subscription state", "space_id", sub.SpaceID, "error", err.Error())
 		}
+	}
+}
+
+// classifyNewConference decides how a conference record with no existing ConferencePostState
+// should be handled: bound to an already-announced calendar event instance, deferred until that
+// instance's scheduled start, posted immediately, or handled by the legacy cooldown heuristic
+// when calendar sync is disabled, errors out, or finds no matching instance. It persists whatever
+// ConferencePostState the decision implies, except when deferred=true, in which case there is
+// nothing to persist yet — see processDueScheduledAnnouncements.
+func (p *Plugin) classifyNewConference(store kvstore.KVStore, sub *kvstore.Subscription, token *kvstore.OAuth2Token, record *conferenceRecord, endTimes map[string]*time.Time) (deferred bool, err error) {
+	if p.getConfiguration().EnableCalendarScheduleSync && record.StartTime != nil {
+		instance, calErr := p.findScheduledInstance(token, sub.MeetingCode, *record.StartTime)
+		switch {
+		case calErr != nil && errors.Is(calErr, ErrInsufficientScopes):
+			p.API.LogWarn("Calendar schedule sync skipped: token missing calendar scope", "space_id", sub.SpaceID, "conference", record.Name, "error", calErr.Error())
+			p.notifyCalendarReconnectNeeded(store, sub.CreatedBy)
+		case calErr != nil:
+			p.API.LogWarn("Calendar schedule lookup failed; falling back to cooldown heuristic", "space_id", sub.SpaceID, "conference", record.Name, "error", calErr.Error())
+		case instance != nil:
+			return p.classifyAgainstCalendarInstance(store, sub, record, instance)
+		}
+	}
+	return false, p.classifyWithCooldown(store, sub, record, endTimes)
+}
+
+// classifyAgainstCalendarInstance handles a conference record known to belong to calendar
+// event instance. If the instance was already announced, the record is bound to that post
+// instead of creating a duplicate. Otherwise it is posted now (if the scheduled start has
+// already passed) or deferred until then.
+func (p *Plugin) classifyAgainstCalendarInstance(store kvstore.KVStore, sub *kvstore.Subscription, record *conferenceRecord, instance *calendarInstance) (bool, error) {
+	if idx := findEventPostBindingIndex(sub.EventPostBindings, instance.InstanceID); idx >= 0 {
+		binding := &sub.EventPostBindings[idx]
+		state := &kvstore.ConferencePostState{
+			MeetingPostID: binding.MeetingPostID,
+			ThreadRootID:  binding.MeetingPostID,
+			ChannelID:     sub.ChannelID,
+		}
+		if err := store.StoreConferencePostState(record.Name, state); err != nil {
+			return false, fmt.Errorf("failed to bind conference to existing calendar post: %w", err)
+		}
+		if !slices.Contains(binding.ConferenceNames, record.Name) {
+			binding.ConferenceNames = append(binding.ConferenceNames, record.Name)
+		}
+		return false, nil
+	}
+
+	if time.Now().Before(instance.Start) {
+		sub.ScheduledAnnouncements = append(sub.ScheduledAnnouncements, kvstore.ScheduledAnnouncement{
+			ConferenceName:  record.Name,
+			EventInstanceID: instance.InstanceID,
+			EventSummary:    instance.Summary,
+			EventEnd:        instance.End,
+			DueAt:           instance.Start,
+		})
+		return true, nil
+	}
+
+	return false, p.postAndBindToCalendarInstance(store, sub, record, instance)
+}
+
+// postAndBindToCalendarInstance creates the conference-started post for a calendar-matched
+// conference and records the EventPostBinding so later records in the same instance reuse it.
+func (p *Plugin) postAndBindToCalendarInstance(store kvstore.KVStore, sub *kvstore.Subscription, record *conferenceRecord, instance *calendarInstance) error {
+	postID, err := p.postConferenceStarted(sub, record, instance)
+	if err != nil {
+		return fmt.Errorf("failed to post conference started: %w", err)
+	}
+	state := &kvstore.ConferencePostState{
+		MeetingPostID: postID,
+		ThreadRootID:  postID,
+		ChannelID:     sub.ChannelID,
+	}
+	if err := store.StoreConferencePostState(record.Name, state); err != nil {
+		return fmt.Errorf("failed to store conference post state: %w", err)
+	}
+	p.API.LogInfo("Posted calendar-anchored Google Meet conference notification", "conference", record.Name, "space_id", sub.SpaceID, "channel_id", sub.ChannelID, "meeting_post_id", postID)
+
+	sub.EventPostBindings = append(sub.EventPostBindings, kvstore.EventPostBinding{
+		EventInstanceID: instance.InstanceID,
+		MeetingPostID:   postID,
+		ConferenceNames: []string{record.Name},
+		ScheduledEnd:    instance.End,
+		ExpiresAt:       instance.End.Add(eventBindingRetention),
+	})
+	return nil
+}
+
+// classifyWithCooldown is the legacy path used when calendar sync is disabled, errors, or has
+// no matching event: suppress a rejoin that starts too soon after the previous conference ended
+// on the same space, otherwise post immediately.
+func (p *Plugin) classifyWithCooldown(store kvstore.KVStore, sub *kvstore.Subscription, record *conferenceRecord, endTimes map[string]*time.Time) error {
+	cooldown := p.getConfiguration().conferenceStartCooldown()
+
+	if cooldown > 0 && record.StartTime != nil {
+		anchor := latestConferenceEndBefore(endTimes, record.Name, *record.StartTime, sub.LastConferenceEndTime)
+		if !anchor.IsZero() && record.StartTime.Sub(anchor) < cooldown {
+			p.API.LogInfo("Suppressing Google Meet conference notification within cooldown window", "conference", record.Name, "space_id", sub.SpaceID, "gap", record.StartTime.Sub(anchor).String())
+			state := &kvstore.ConferencePostState{
+				ChannelID:  sub.ChannelID,
+				Suppressed: true,
+			}
+			return store.StoreConferencePostState(record.Name, state)
+		}
+	}
+
+	postID, err := p.postConferenceStarted(sub, record, nil)
+	if err != nil {
+		return fmt.Errorf("failed to post conference started: %w", err)
+	}
+	p.API.LogInfo("Posted new Google Meet conference notification", "conference", record.Name, "space_id", sub.SpaceID, "channel_id", sub.ChannelID, "meeting_post_id", postID)
+	state := &kvstore.ConferencePostState{
+		MeetingPostID: postID,
+		ThreadRootID:  postID,
+		ChannelID:     sub.ChannelID,
+	}
+	return store.StoreConferencePostState(record.Name, state)
+}
+
+// processDueScheduledAnnouncements posts (or drops) conference-started announcements that were
+// deferred until their calendar event's scheduled start and whose due time has now passed.
+// A deferred conference whose record already ended before the due time is dropped rather than
+// posted — most likely someone opened the link early and left before the meeting was due to
+// start; if the real meeting still happens, Google Meet will hand back a fresh conference record
+// that gets classified (and posted) on its own.
+func (p *Plugin) processDueScheduledAnnouncements(store kvstore.KVStore, sub *kvstore.Subscription, token *kvstore.OAuth2Token) bool {
+	if len(sub.ScheduledAnnouncements) == 0 {
+		return false
+	}
+
+	now := time.Now()
+	changed := false
+	remaining := sub.ScheduledAnnouncements[:0]
+	for _, ann := range sub.ScheduledAnnouncements {
+		if ann.DueAt.After(now) {
+			remaining = append(remaining, ann)
+			continue
+		}
+
+		record, err := p.getConferenceRecord(token, ann.ConferenceName)
+		if err != nil {
+			p.API.LogWarn("Failed to refresh deferred conference record; will retry next poll", "conference", ann.ConferenceName, "error", err.Error())
+			remaining = append(remaining, ann)
+			continue
+		}
+
+		changed = true
+		if record.EndTime != nil && record.EndTime.Before(ann.DueAt) {
+			p.API.LogInfo("Dropping deferred conference announcement: conference ended before its scheduled start", "conference", ann.ConferenceName, "space_id", sub.SpaceID)
+			if err := store.StoreConferencePostState(ann.ConferenceName, &kvstore.ConferencePostState{ChannelID: sub.ChannelID, Suppressed: true}); err != nil {
+				p.API.LogWarn("Failed to persist suppressed state for dropped announcement", "conference", ann.ConferenceName, "error", err.Error())
+			}
+			continue
+		}
+
+		instance := &calendarInstance{
+			InstanceID: ann.EventInstanceID,
+			Summary:    ann.EventSummary,
+			Start:      ann.DueAt,
+			End:        ann.EventEnd,
+		}
+		if err := p.postAndBindToCalendarInstance(store, sub, record, instance); err != nil {
+			p.API.LogWarn("Failed to post deferred conference announcement; will retry next poll", "conference", ann.ConferenceName, "error", err.Error())
+			remaining = append(remaining, ann)
+			continue
+		}
+		// This record's own fetch loop already ran and passed on it while it was deferred, so
+		// it needs to be added to ActiveConferenceIDs here for artifact polling to pick it up.
+		if !slices.Contains(sub.ActiveConferenceIDs, ann.ConferenceName) {
+			sub.ActiveConferenceIDs = append(sub.ActiveConferenceIDs, ann.ConferenceName)
+		}
+	}
+	sub.ScheduledAnnouncements = remaining
+	return changed
+}
+
+// pruneExpiredEventBindings drops EventPostBindings past their ExpiresAt so a long-lived
+// subscription's record doesn't grow without bound.
+func pruneExpiredEventBindings(sub *kvstore.Subscription) bool {
+	if len(sub.EventPostBindings) == 0 {
+		return false
+	}
+	now := time.Now()
+	kept := sub.EventPostBindings[:0]
+	for _, binding := range sub.EventPostBindings {
+		if binding.ExpiresAt.IsZero() || binding.ExpiresAt.After(now) {
+			kept = append(kept, binding)
+		}
+	}
+	changed := len(kept) != len(sub.EventPostBindings)
+	sub.EventPostBindings = kept
+	return changed
+}
+
+func findEventPostBindingIndex(bindings []kvstore.EventPostBinding, instanceID string) int {
+	for i := range bindings {
+		if bindings[i].EventInstanceID == instanceID {
+			return i
+		}
+	}
+	return -1
+}
+
+func findEventPostBindingByPostID(bindings []kvstore.EventPostBinding, postID string) int {
+	for i := range bindings {
+		if bindings[i].MeetingPostID == postID {
+			return i
+		}
+	}
+	return -1
+}
+
+// maybeMarkConferenceEnded marks state's post as ended when its conference record's end time has
+// passed. For a conference record bound to a calendar event instance, the decision is made at the
+// instance level: every conference record sharing the binding must be known to have ended, and
+// conferenceRejoinGrace must have elapsed since the latest of those ends, before the post flips to
+// ended — so a brief drop-and-rejoin within the same scheduled meeting doesn't flap the post.
+// Returns true if state was mutated (caller is responsible for persisting it).
+func (p *Plugin) maybeMarkConferenceEnded(sub *kvstore.Subscription, state *kvstore.ConferencePostState, confName string, resolvedEnd map[string]*time.Time) bool {
+	if state.MeetingEndedPosted {
+		return false
+	}
+	endTime := resolvedEnd[confName]
+	if endTime == nil || endTime.IsZero() || endTime.After(time.Now()) {
+		return false
+	}
+
+	if idx := findEventPostBindingByPostID(sub.EventPostBindings, state.MeetingPostID); idx >= 0 {
+		binding := &sub.EventPostBindings[idx]
+		if binding.EndedPosted {
+			state.MeetingEndedPosted = true
+			return true
+		}
+		latestEnd, allEnded := aggregateBindingEnd(binding.ConferenceNames, resolvedEnd)
+		if !allEnded || time.Now().Before(latestEnd.Add(conferenceRejoinGrace)) {
+			return false
+		}
+		if err := p.markMeetingEnded(state.MeetingPostID, &latestEnd); err != nil {
+			p.API.LogWarn("Failed to mark calendar-bound meeting as ended", "conference", confName, "post_id", state.MeetingPostID, "error", err.Error())
+			return false
+		}
+		binding.EndedPosted = true
+		state.MeetingEndedPosted = true
+		return true
+	}
+
+	if err := p.markMeetingEnded(state.MeetingPostID, endTime); err != nil {
+		p.API.LogWarn("Failed to mark meeting as ended", "conference", confName, "post_id", state.MeetingPostID, "error", err.Error())
+		return false
+	}
+	state.MeetingEndedPosted = true
+	return true
+}
+
+// aggregateBindingEnd returns the latest known end time across names and whether all of them
+// have a known (non-zero) end time yet.
+func aggregateBindingEnd(names []string, resolvedEnd map[string]*time.Time) (time.Time, bool) {
+	var latest time.Time
+	for _, name := range names {
+		end := resolvedEnd[name]
+		if end == nil || end.IsZero() {
+			return time.Time{}, false
+		}
+		if end.After(latest) {
+			latest = *end
+		}
+	}
+	return latest, true
+}
+
+// notifyCalendarReconnectNeeded DMs the subscription creator once when the Calendar API reports
+// insufficient scopes, so the fallback to the cooldown heuristic isn't silent. Suppressed for a
+// day afterward (see kvstore.calendarReconnectNoticeTTL) to avoid spamming every poll cycle.
+func (p *Plugin) notifyCalendarReconnectNeeded(store kvstore.KVStore, userID string) {
+	sent, err := store.HasCalendarReconnectNoticeSent(userID)
+	if err != nil {
+		p.API.LogWarn("Failed to check calendar reconnect notice state", "user_id", userID, "error", err.Error())
+		return
+	}
+	if sent {
+		return
+	}
+
+	if p.botID == "" {
+		return
+	}
+	channel, appErr := p.API.GetDirectChannel(p.botID, userID)
+	if appErr != nil {
+		p.API.LogWarn("Failed to open DM channel for calendar reconnect notice", "user_id", userID, "error", appErr.Error())
+		return
+	}
+	if channel == nil {
+		return
+	}
+
+	post := &model.Post{
+		UserId:    p.botID,
+		ChannelId: channel.Id,
+		Message: "Google Meet subscriptions are configured to sync conference-started posts with your calendar schedule, but your connected Google account is missing the Calendar scope. " +
+			"Run `/meet connect` to reconnect and grant access — until then, conferences will keep using the cooldown fallback instead of the scheduled time.",
+	}
+	if _, appErr := p.API.CreatePost(post); appErr != nil {
+		p.API.LogWarn("Failed to send calendar reconnect DM", "user_id", userID, "error", appErr.Error())
+		return
+	}
+
+	if err := store.StoreCalendarReconnectNoticeSent(userID); err != nil {
+		p.API.LogWarn("Failed to persist calendar reconnect notice state", "user_id", userID, "error", err.Error())
 	}
 }
 
@@ -278,10 +601,12 @@ func latestConferenceEndBefore(endTimes map[string]*time.Time, selfName string, 
 }
 
 // pollConferenceArtifacts checks a single conference record for new recordings/transcripts/smart notes.
-// If endTime is non-nil and in the past, the meeting post's Join button and link are removed (once).
+// Meeting-ended detection happens in the caller (see maybeMarkConferenceEnded and pollAdHocMeetings),
+// since deciding it requires context — calendar-instance aggregation for subscriptions, none for
+// ad-hoc — that this function doesn't have.
 // Returns true only when the conference's KV state entry is missing (TTL expired), signalling
 // that the caller should prune it from ActiveConferenceIDs.
-func (p *Plugin) pollConferenceArtifacts(store kvstore.KVStore, token *kvstore.OAuth2Token, confName string, endTime *time.Time) bool {
+func (p *Plugin) pollConferenceArtifacts(store kvstore.KVStore, token *kvstore.OAuth2Token, confName string) bool {
 	state, err := store.GetConferencePostState(confName)
 	if err != nil {
 		p.API.LogWarn("Failed to get conference post state during artifact poll; will retry", "conference", confName, "error", err.Error())
@@ -300,15 +625,6 @@ func (p *Plugin) pollConferenceArtifacts(store kvstore.KVStore, token *kvstore.O
 	persistState := func() {
 		if persistErr := store.StoreConferencePostState(confName, state); persistErr != nil {
 			p.API.LogWarn("Failed to persist conference post state; artifact may be reposted on retry", "conference", confName, "error", persistErr.Error())
-		}
-	}
-
-	if endTime != nil && !endTime.IsZero() && endTime.Before(time.Now()) && !state.MeetingEndedPosted {
-		if endErr := p.markMeetingEnded(state.MeetingPostID, endTime); endErr != nil {
-			p.API.LogWarn("Failed to mark meeting as ended", "conference", confName, "post_id", state.MeetingPostID, "error", endErr.Error())
-		} else {
-			state.MeetingEndedPosted = true
-			persistState()
 		}
 	}
 
@@ -396,7 +712,8 @@ func (p *Plugin) pollConferenceArtifacts(store kvstore.KVStore, token *kvstore.O
 // pollAdHocMeetings checks all ad-hoc meetings (started via /meet start) for new artifacts.
 // Unlike subscriptions, ad-hoc entries are pinned to a specific post that already exists as
 // the root, so there is no need to create a conference-started post — we reuse the one
-// created by StartMeeting.
+// created by StartMeeting. There is also no calendar binding to aggregate over, so meeting-ended
+// detection stays per-record, same as before calendar sync was introduced.
 func (p *Plugin) pollAdHocMeetings(store kvstore.KVStore) {
 	// Defense in depth: bail early if the admin disabled the feature mid-cycle.
 	if !p.getConfiguration().EnableConferenceArtifactPosts {
@@ -459,7 +776,18 @@ func (p *Plugin) pollAdHocMeetings(store kvstore.KVStore) {
 				}
 			}
 
-			p.pollConferenceArtifacts(store, token, record.Name, record.EndTime)
+			if record.EndTime != nil && !record.EndTime.IsZero() && record.EndTime.Before(time.Now()) && !state.MeetingEndedPosted {
+				if endErr := p.markMeetingEnded(state.MeetingPostID, record.EndTime); endErr != nil {
+					p.API.LogWarn("Failed to mark ad-hoc meeting as ended", "conference", record.Name, "post_id", state.MeetingPostID, "error", endErr.Error())
+				} else {
+					state.MeetingEndedPosted = true
+					if err := store.StoreConferencePostState(record.Name, state); err != nil {
+						p.API.LogWarn("Failed to persist ad-hoc meeting-ended state", "conference", record.Name, "error", err.Error())
+					}
+				}
+			}
+
+			p.pollConferenceArtifacts(store, token, record.Name)
 		}
 	}
 }

@@ -198,6 +198,12 @@ func (p *Plugin) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 
 	token, err := p.exchangeCodeForToken(code)
 	if err != nil {
+		if errors.Is(err, ErrMissingMandatoryScopes) {
+			p.handleErrorWithCode(w, http.StatusBadRequest,
+				"Google connection requires granting all requested Meet permissions. Please run /meet connect again and approve every permission on the consent screen.",
+				err)
+			return
+		}
 		p.handleError(w, fmt.Errorf("failed to exchange code for token: %w", err))
 		return
 	}

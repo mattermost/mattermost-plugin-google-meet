@@ -19,6 +19,10 @@ import (
 // ErrInsufficientScopes indicates the token lacks the required OAuth scope.
 var ErrInsufficientScopes = errors.New("insufficient authentication scopes")
 
+// ErrMissingMandatoryScopes indicates the user declined, via Google's granular consent
+// screen, one or more scopes the plugin cannot function without.
+var ErrMissingMandatoryScopes = errors.New("missing mandatory oauth scopes")
+
 const (
 	googleAuthURL      = "https://accounts.google.com/o/oauth2/v2/auth"
 	tokenRefreshBuffer = 5 * time.Minute
@@ -28,6 +32,10 @@ const (
 	// meetScopeReadonly grants reading conferenceRecords, recordings, transcripts, and smart notes.
 	// Only requested when conference artifact polling is enabled.
 	meetScopeReadonly = "https://www.googleapis.com/auth/meetings.space.readonly"
+	// calendarScopeEventsReadonly grants reading calendar events so the poller can anchor
+	// conference-started posts to the organizer's scheduled start time. Only requested when
+	// calendar schedule sync is enabled.
+	calendarScopeEventsReadonly = "https://www.googleapis.com/auth/calendar.events.readonly"
 )
 
 // These are vars so tests can override them with httptest servers.
@@ -67,6 +75,9 @@ func (p *Plugin) buildAuthURL(state string) string {
 	if config.EnableConferenceArtifactPosts {
 		scope += " " + meetScopeReadonly
 	}
+	if config.EnableCalendarScheduleSync {
+		scope += " " + calendarScopeEventsReadonly
+	}
 
 	params := url.Values{
 		"client_id":     {config.GoogleClientID},
@@ -79,6 +90,35 @@ func (p *Plugin) buildAuthURL(state string) string {
 	}
 
 	return googleAuthURL + "?" + params.Encode()
+}
+
+// mandatoryScopes returns the OAuth scopes the plugin cannot operate without, based on
+// current configuration. calendarScopeEventsReadonly is deliberately excluded: Google's
+// granular consent screen lets users decline it independently of the others, and the
+// poller already falls back to the cooldown heuristic when it's missing.
+func mandatoryScopes(config *configuration) []string {
+	scopes := []string{meetScopeCreated}
+	if config.EnableConferenceArtifactPosts {
+		scopes = append(scopes, meetScopeReadonly)
+	}
+	return scopes
+}
+
+// missingScopes returns which of the required scopes are absent from the space-delimited
+// granted scope string Google returns in the token response.
+func missingScopes(granted string, required []string) []string {
+	grantedSet := make(map[string]bool, len(required))
+	for _, s := range strings.Fields(granted) {
+		grantedSet[s] = true
+	}
+
+	var missing []string
+	for _, r := range required {
+		if !grantedSet[r] {
+			missing = append(missing, r)
+		}
+	}
+	return missing
 }
 
 type tokenResponse struct {
@@ -126,6 +166,10 @@ func (p *Plugin) exchangeCodeForToken(code string) (*kvstore.OAuth2Token, error)
 	var tokenResp tokenResponse
 	if err := json.Unmarshal(body, &tokenResp); err != nil {
 		return nil, fmt.Errorf("failed to parse token response: %w", err)
+	}
+
+	if missing := missingScopes(tokenResp.Scope, mandatoryScopes(config)); len(missing) > 0 {
+		return nil, fmt.Errorf("%w: %s", ErrMissingMandatoryScopes, strings.Join(missing, ", "))
 	}
 
 	token := &kvstore.OAuth2Token{

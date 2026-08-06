@@ -33,8 +33,10 @@ type meetingArtifactLink struct {
 }
 
 // postConferenceStarted creates a top-level post in the channel announcing the new conference
-// and returns the created post ID and channel ID.
-func (p *Plugin) postConferenceStarted(sub *kvstore.Subscription, record *conferenceRecord) (string, error) {
+// and returns the created post ID and channel ID. When instance is non-nil, the conference was
+// matched to a calendar event: the post's title uses the event summary and carries the
+// scheduled start time alongside the actual conference start.
+func (p *Plugin) postConferenceStarted(sub *kvstore.Subscription, record *conferenceRecord, instance *calendarInstance) (string, error) {
 	if p.botID == "" {
 		return "", fmt.Errorf("bot is not initialised yet")
 	}
@@ -45,18 +47,26 @@ func (p *Plugin) postConferenceStarted(sub *kvstore.Subscription, record *confer
 
 	message := "A new Google Meet conference has started."
 
+	props := model.StringInterface{
+		"meeting_code":      sub.MeetingCode,
+		"space_id":          sub.SpaceID,
+		"description":       sub.Description,
+		"conference_record": record.Name,
+		"conference_start":  startedAt.UTC().Format(time.RFC3339),
+	}
+	if instance != nil {
+		if instance.Summary != "" {
+			props["meeting_topic"] = instance.Summary
+		}
+		props["scheduled_start"] = instance.Start.UTC().Format(time.RFC3339)
+	}
+
 	post := &model.Post{
 		UserId:    p.botID,
 		ChannelId: sub.ChannelID,
 		Message:   message,
 		Type:      postTypeConference,
-		Props: model.StringInterface{
-			"meeting_code":      sub.MeetingCode,
-			"space_id":          sub.SpaceID,
-			"description":       sub.Description,
-			"conference_record": record.Name,
-			"conference_start":  startedAt.UTC().Format(time.RFC3339),
-		},
+		Props:     props,
 	}
 
 	created, appErr := p.API.CreatePost(post)

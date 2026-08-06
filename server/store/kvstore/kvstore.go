@@ -37,6 +37,41 @@ type Subscription struct {
 	LastConferenceEndTime time.Time `json:"last_conference_end_time,omitzero"`
 	// ActiveConferenceIDs are conference records we are still monitoring for artifacts.
 	ActiveConferenceIDs []string `json:"active_conference_ids,omitempty"`
+	// ScheduledAnnouncements are conference-started posts deferred until their calendar
+	// event's official start time, so an early join doesn't drift the notification away
+	// from the schedule. Only populated when EnableCalendarScheduleSync is on.
+	ScheduledAnnouncements []ScheduledAnnouncement `json:"scheduled_announcements,omitempty"`
+	// EventPostBindings map an announced calendar event instance to the single post created
+	// for it, so repeat conference records within the same instance (e.g. a drop and rejoin)
+	// reuse the post instead of creating a duplicate.
+	EventPostBindings []EventPostBinding `json:"event_post_bindings,omitempty"`
+}
+
+// ScheduledAnnouncement is a conference-started post waiting for its calendar event's
+// scheduled start time before it is created.
+type ScheduledAnnouncement struct {
+	ConferenceName  string `json:"conference_name"`
+	EventInstanceID string `json:"event_instance_id"`
+	EventSummary    string `json:"event_summary,omitempty"`
+	// EventEnd is carried along so the post can be bound to an EventPostBinding once created,
+	// without a second calendar lookup at due time.
+	EventEnd time.Time `json:"event_end,omitzero"`
+	DueAt    time.Time `json:"due_at"`
+}
+
+// EventPostBinding records that a calendar event instance has already been announced, and
+// which conference records and post it is bound to.
+type EventPostBinding struct {
+	EventInstanceID string    `json:"event_instance_id"`
+	MeetingPostID   string    `json:"meeting_post_id"`
+	ConferenceNames []string  `json:"conference_names,omitempty"`
+	ScheduledEnd    time.Time `json:"scheduled_end,omitzero"`
+	// EndedPosted marks that markMeetingEnded has already run for this binding, so it is not
+	// invoked again once every bound conference record is known to have ended.
+	EndedPosted bool `json:"ended_posted,omitempty"`
+	// ExpiresAt is when the binding can be pruned from the subscription (scheduled end plus
+	// the conference post state TTL), so a long-lived subscription's record can't grow forever.
+	ExpiresAt time.Time `json:"expires_at"`
 }
 
 // ConferencePostState tracks what artifacts have been posted for one conferenceRecord.
@@ -103,4 +138,9 @@ type KVStore interface {
 	ListAdHocSpaceIDs() ([]string, error)
 	AddToAdHocIndex(spaceID string) error
 	RemoveFromAdHocIndex(spaceID string) error
+
+	// Calendar reconnect notices: a one-time-per-window DM telling a subscription creator
+	// their token is missing the calendar scope, so the cooldown fallback isn't silent.
+	StoreCalendarReconnectNoticeSent(userID string) error
+	HasCalendarReconnectNoticeSent(userID string) (bool, error)
 }

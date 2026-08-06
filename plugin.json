@@ -69,8 +69,15 @@
                 "key": "ConferenceStartCooldownHours",
                 "display_name": "Conference Start Cooldown (hours)",
                 "type": "number",
-                "help_text": "A new conference on a subscribed meeting space will not be announced if it starts within this many hours of the previous conference ending. Prevents duplicate conference-started posts when people rejoin a meeting link after it has ended. Set to 0 to disable. Default 12.",
+                "help_text": "A new conference on a subscribed meeting space will not be announced if it starts within this many hours of the previous conference ending. Prevents duplicate conference-started posts when people rejoin a meeting link after it has ended. Used as a fallback for conferences with no matching calendar event when Sync Conference Posts to Calendar Schedule is enabled. Set to 0 to disable. Default 12.",
                 "default": 12
+            },
+            {
+                "key": "EnableCalendarScheduleSync",
+                "display_name": "Sync Conference Posts to Calendar Schedule",
+                "type": "bool",
+                "help_text": "When enabled, conference-started posts for subscribed meeting spaces are timed to match the organizer's calendar event instead of the moment someone first joins, avoiding early-join drift and off-hours false positives. Requires the calendar.events.readonly OAuth scope; users must run /meet connect again to grant it after enabling this setting. Conferences with no matching calendar event fall back to the Conference Start Cooldown setting above. Default: disabled.",
+                "default": false
             }
         ]
     }

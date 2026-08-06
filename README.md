@@ -72,6 +72,8 @@ The channel will now receive a "conference started" message whenever someone sta
 
 You can also pass a full meeting URL — `https://meet.google.com/abc-mnop-xyz` works in place of the bare code.
 
+If `Sync Conference Posts to Calendar Schedule` is enabled, the "conference started" message is timed to the calendar event backing the meeting (see below) rather than the moment the first person joins, so someone dialing in a few minutes early doesn't drift the notification away from the scheduled time.
+
 ### Ad-hoc meeting tracking
 
 For meetings started with `/meet start`, the plugin automatically tracks the resulting Meet space for the duration of its conference record TTL and posts any recording/transcript/smart note as replies to the original message. No explicit subscription is needed.
@@ -111,8 +113,9 @@ If `SiteURL` is missing, the plugin intentionally reports itself as not fully co
 In Google Cloud:
 
 1. Enable the [Google Meet REST API](https://console.cloud.google.com/apis/library/meet.googleapis.com).
-2. Create an OAuth 2.0 Client ID of type `Web application`.
-3. Add the redirect URI (`https://your-mattermost-server.com/plugins/com.mattermost.google-meet/api/v1/oauth/callback`).
+2. If you plan to enable `Sync Conference Posts to Calendar Schedule`, also enable the [Google Calendar API](https://console.cloud.google.com/apis/library/calendar-json.googleapis.com).
+3. Create an OAuth 2.0 Client ID of type `Web application`.
+4. Add the redirect URI (`https://your-mattermost-server.com/plugins/com.mattermost.google-meet/api/v1/oauth/callback`).
 
 The plugin displays the expected redirect URI in the System Console plugin settings header after activation.
 
@@ -126,7 +129,8 @@ In the Mattermost System Console, configure:
 - `Restrict Meeting Creation`: when enabled, users can only create meetings in private channels, group messages, and direct messages.
 - `Post Recordings, Transcripts and Smart Notes`: enables the background poller that watches subscribed and ad-hoc meetings and posts artifacts as thread replies. Default: enabled.
 - `Polling Interval (seconds)`: how often the poller checks Google for new conferences and artifacts. Default: 60 seconds. Minimum: 30 seconds.
-- `Conference Start Cooldown (hours)`: suppresses a "conference started" post on a subscribed space if it starts within this many hours of the previous conference ending on that space — avoids re-announcing when people reopen a meeting link after it has ended. Default: 12 hours. Set to `0` to disable.
+- `Conference Start Cooldown (hours)`: suppresses a "conference started" post on a subscribed space if it starts within this many hours of the previous conference ending on that space — avoids re-announcing when people reopen a meeting link after it has ended. Used as a fallback for conferences with no matching calendar event when `Sync Conference Posts to Calendar Schedule` is enabled. Default: 12 hours. Set to `0` to disable.
+- `Sync Conference Posts to Calendar Schedule`: times "conference started" posts on subscribed spaces to the organizer's calendar event instead of the moment someone first joins. Default: disabled.
 
 Important notes:
 
@@ -139,8 +143,11 @@ The plugin requests the minimum scopes required by the features that are enabled
 
 - `https://www.googleapis.com/auth/meetings.space.created` — always requested. Lets the plugin create new Meet spaces on the user's behalf for `/meet start`.
 - `https://www.googleapis.com/auth/meetings.space.readonly` — only requested when `Post Recordings, Transcripts and Smart Notes` is enabled. Lets the plugin read conference records, recordings, transcripts, and smart notes for subscribed and ad-hoc meetings.
+- `https://www.googleapis.com/auth/calendar.events.readonly` — only requested when `Sync Conference Posts to Calendar Schedule` is enabled. Lets the plugin read the subscription creator's primary calendar so it can match a conference to its scheduled event.
 
-If you toggle `Post Recordings, Transcripts and Smart Notes` from disabled to enabled after users have already connected, existing tokens will not carry the readonly scope. Affected users will be prompted to reconnect the next time they hit a feature that needs it.
+If you toggle `Post Recordings, Transcripts and Smart Notes` or `Sync Conference Posts to Calendar Schedule` from disabled to enabled after users have already connected, existing tokens will not carry the new scope. Affected users will be prompted to reconnect the next time they hit a feature that needs it.
+
+Google's consent screen lets users individually decline any of the above scopes ("granular permissions"). The plugin treats `calendar.events.readonly` as optional — declining it just keeps the connection on the cooldown fallback (see above). Declining `meetings.space.created` or `meetings.space.readonly`, however, is treated as a failed connection: the plugin rejects the callback and asks the user to run `/meet connect` again and approve every permission, since it can't function without them.
 
 ## Configuration Reference
 
@@ -170,7 +177,18 @@ How often (in seconds) the plugin polls Google for new conferences and artifacts
 
 ### `ConferenceStartCooldownHours`
 
-Google Meet spaces are permanent links with no scheduling metadata, so the plugin cannot tell whether a new conference on a subscribed space is a genuinely new meeting or just someone reopening the link after the real meeting ended. To avoid spamming the channel in the latter case, a new conference is not announced if it starts within this many hours of the *previous* conference ending on the same space. The cooldown is anchored to the previous conference's end time (not its start), so a single long-running meeting is never suppressed. Default 12 hours. Set to `0` to disable the guard and always announce new conferences. Only used when `EnableConferenceArtifactPosts` is enabled.
+Google Meet spaces are permanent links with no scheduling metadata of their own, so on a subscribed space whose conference has no matching calendar event — because `EnableCalendarScheduleSync` is off, the lookup failed, or no calendar event was found — the plugin cannot tell whether a new conference is a genuinely new meeting or just someone reopening the link after the real meeting ended. To avoid spamming the channel in the latter case, such a conference is not announced if it starts within this many hours of the *previous* conference ending on the same space. The cooldown is anchored to the previous conference's end time (not its start), so a single long-running meeting is never suppressed. Default 12 hours. Set to `0` to disable the guard and always announce new conferences. Only used when `EnableConferenceArtifactPosts` is enabled.
+
+### `EnableCalendarScheduleSync`
+
+When enabled, a new conference on a subscribed space is matched against the creator's primary Google Calendar by looking for an event whose Meet conference ID equals the subscription's meeting code and whose scheduled time brackets the conference's actual start (within a 30-minute window on either side). This requires the creator to be the organizer of, or an attendee on, that calendar event.
+
+- If a match is found and its scheduled start is still in the future, the "conference started" post is deferred until that scheduled start instead of posting immediately — this is what fixes early-join drift.
+- If a second conference record matches the same calendar event occurrence (for example everyone drops and rejoins), it is bound to the already-announced post instead of creating a duplicate, and its artifacts still thread correctly. This also fixes a side effect of the cooldown-only heuristic, where a suppressed rejoin's recordings and transcripts were previously never tracked.
+- If no matching calendar event is found, the conference falls back to the `ConferenceStartCooldownHours` heuristic described above.
+- The meeting post's title is taken from the calendar event's summary when a match is found.
+
+Enabling this setting changes the requested OAuth scope; users must run `/meet connect` again to grant `calendar.events.readonly`. Until they do, the plugin DMs the subscription creator once (repeating at most once per day) to explain that conferences on their subscriptions are using the cooldown fallback instead of the scheduled time. Default: disabled.
 
 ## Development
 
@@ -288,6 +306,13 @@ Check each of the following in order:
 - The meeting actually used the subscribed Meet space — ad-hoc meetings post under the originating `/meet start` thread, not under a channel subscription.
 - For recordings/transcripts/smart notes specifically, the Google Meet space settings need to have the corresponding feature enabled. The plugin only relays what Google produces; it cannot retroactively enable recording on a meeting that did not opt in to it.
 - Wait at least one poll interval (default 60s) after a meeting starts/ends. Artifacts in particular can take several minutes after a meeting before Google finishes processing them.
+- If `EnableCalendarScheduleSync` is enabled and the meeting has a calendar event, the post is deferred until the event's scheduled start — it will not appear immediately even though the conference is active.
+
+### "Conference started" post appears late or not at all with calendar sync enabled
+
+- Confirm the subscription creator reconnected (`/meet connect`) after `Sync Conference Posts to Calendar Schedule` was turned on — otherwise their token is missing `calendar.events.readonly` and the plugin DMs them about it, then falls back to the cooldown heuristic.
+- The creator must be the organizer of, or an attendee on, the calendar event; the plugin only reads the creator's own primary calendar.
+- The calendar event's Meet conference must match the subscription's meeting code exactly, and the event must not be all-day or cancelled.
 
 ### Subscription was added but seems to apply to the wrong channel
 
