@@ -820,7 +820,7 @@ func calendarEventForCode(id, meetingCode, summary string, start, end time.Time)
 // actually arrives.
 func TestPollSubscription_CalendarEarlyJoinDefersUntilScheduledStart(t *testing.T) {
 	conferenceStart := time.Now().UTC()
-	scheduledStart := conferenceStart.Add(500 * time.Millisecond)
+	scheduledStart := conferenceStart.Add(2 * time.Second)
 	scheduledEnd := scheduledStart.Add(30 * time.Minute)
 	token := &kvstore.OAuth2Token{AccessToken: "test-token", Expiry: conferenceStart.Add(time.Hour)}
 
@@ -867,7 +867,7 @@ func TestPollSubscription_CalendarEarlyJoinDefersUntilScheduledStart(t *testing.
 	assert.Equal(t, "conferenceRecords/rec1", sub.ScheduledAnnouncements[0].ConferenceName)
 	assert.NotContains(t, sub.ActiveConferenceIDs, "conferenceRecords/rec1", "a deferred conference should not be tracked as active yet")
 
-	time.Sleep(600 * time.Millisecond)
+	time.Sleep(time.Until(scheduledStart) + 100*time.Millisecond)
 	listedRecords = nil // Google would not hand back this record again; the watermark already passed it.
 	p.pollSubscription(kv, sub)
 
@@ -885,7 +885,7 @@ func TestPollSubscription_CalendarEarlyJoinDefersUntilScheduledStart(t *testing.
 func TestPollSubscription_CalendarEarlyJoinDroppedIfLeftBeforeScheduledStart(t *testing.T) {
 	conferenceStart := time.Now().UTC()
 	conferenceEnd := conferenceStart.Add(100 * time.Millisecond)
-	scheduledStart := conferenceStart.Add(500 * time.Millisecond)
+	scheduledStart := conferenceStart.Add(2 * time.Second)
 	scheduledEnd := scheduledStart.Add(30 * time.Minute)
 	token := &kvstore.OAuth2Token{AccessToken: "test-token", Expiry: conferenceStart.Add(time.Hour)}
 
@@ -930,7 +930,7 @@ func TestPollSubscription_CalendarEarlyJoinDroppedIfLeftBeforeScheduledStart(t *
 	p.pollSubscription(kv, sub)
 	require.Len(t, sub.ScheduledAnnouncements, 1)
 
-	time.Sleep(600 * time.Millisecond)
+	time.Sleep(time.Until(scheduledStart) + 100*time.Millisecond)
 	listedRecords = nil
 	p.pollSubscription(kv, sub)
 
@@ -1006,6 +1006,97 @@ func TestPollSubscription_CalendarInstanceReuseBindsArtifactsToSamePost(t *testi
 
 	require.Len(t, sub.EventPostBindings, 1)
 	assert.ElementsMatch(t, []string{"conferenceRecords/rec1", "conferenceRecords/rec2"}, sub.EventPostBindings[0].ConferenceNames)
+}
+
+func TestClassifyAgainstCalendarInstance_DoesNotDuplicateDeferredAnnouncement(t *testing.T) {
+	api := &mockPluginAPI{siteURL: "http://localhost:8065"}
+	kv := newMockKVStore()
+	p := pollTestPlugin(t, api, kv)
+	sub := &kvstore.Subscription{ChannelID: "chan1"}
+	record := &conferenceRecord{Name: "conferenceRecords/rec1"}
+	instance := &calendarInstance{
+		InstanceID: "evt1",
+		Start:      time.Now().Add(time.Hour),
+		End:        time.Now().Add(2 * time.Hour),
+	}
+
+	deferred, err := p.classifyAgainstCalendarInstance(kv, sub, record, instance)
+	require.NoError(t, err)
+	require.True(t, deferred)
+	deferred, err = p.classifyAgainstCalendarInstance(kv, sub, record, instance)
+	require.NoError(t, err)
+	require.True(t, deferred)
+	assert.Len(t, sub.ScheduledAnnouncements, 1)
+}
+
+func TestPostAndBindToCalendarInstance_ReusesExistingBinding(t *testing.T) {
+	api := &mockPluginAPI{siteURL: "http://localhost:8065", captureAllPosts: true}
+	kv := newMockKVStore()
+	p := pollTestPlugin(t, api, kv)
+	sub := &kvstore.Subscription{
+		ChannelID: "chan1",
+		EventPostBindings: []kvstore.EventPostBinding{{
+			EventInstanceID: "evt1",
+			MeetingPostID:   "post1",
+			ConferenceNames: []string{"conferenceRecords/rec1"},
+		}},
+	}
+	record := &conferenceRecord{Name: "conferenceRecords/rec2"}
+	instance := &calendarInstance{InstanceID: "evt1"}
+
+	require.NoError(t, p.postAndBindToCalendarInstance(kv, sub, record, instance))
+	assert.Empty(t, api.allPosts)
+	assert.Equal(t, []string{"conferenceRecords/rec1", "conferenceRecords/rec2"}, sub.EventPostBindings[0].ConferenceNames)
+	state, err := kv.GetConferencePostState(record.Name)
+	require.NoError(t, err)
+	require.NotNil(t, state)
+	assert.Equal(t, "post1", state.MeetingPostID)
+}
+
+func TestProcessDueScheduledAnnouncements_DropsExpiredRefreshFailures(t *testing.T) {
+	withCalendarPollServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	})
+
+	api := &mockPluginAPI{siteURL: "http://localhost:8065"}
+	kv := newMockKVStore()
+	p := pollTestPlugin(t, api, kv)
+	now := time.Now()
+	sub := &kvstore.Subscription{
+		ScheduledAnnouncements: []kvstore.ScheduledAnnouncement{
+			{
+				ConferenceName: "conferenceRecords/expired",
+				DueAt:          now.Add(-time.Hour),
+				EventEnd:       now.Add(-eventBindingRetention - time.Hour),
+			},
+			{
+				ConferenceName: "conferenceRecords/retry",
+				DueAt:          now.Add(-time.Hour),
+				EventEnd:       now,
+			},
+		},
+	}
+
+	changed := p.processDueScheduledAnnouncements(kv, sub, newTestToken())
+	assert.True(t, changed)
+	require.Len(t, sub.ScheduledAnnouncements, 1)
+	assert.Equal(t, "conferenceRecords/retry", sub.ScheduledAnnouncements[0].ConferenceName)
+}
+
+func TestAggregateBindingEnd_TracksOnlyActiveConferences(t *testing.T) {
+	ended := time.Now().Add(-time.Hour)
+	names := []string{"conferenceRecords/stale", "conferenceRecords/ended", "conferenceRecords/unknown"}
+	resolvedEnd := map[string]*time.Time{
+		"conferenceRecords/ended": &ended,
+	}
+
+	latest, allEnded := aggregateBindingEnd(names, []string{"conferenceRecords/ended", "conferenceRecords/unknown"}, resolvedEnd)
+	assert.False(t, allEnded, "an active conference with an unknown end must keep the binding active")
+	assert.True(t, latest.IsZero())
+
+	latest, allEnded = aggregateBindingEnd(names, []string{"conferenceRecords/ended"}, resolvedEnd)
+	assert.True(t, allEnded, "a conference no longer tracked as active must not block the binding")
+	assert.Equal(t, ended, latest)
 }
 
 // TestPollSubscription_CalendarNoMatchFallsBackToCooldown verifies that a conference with no

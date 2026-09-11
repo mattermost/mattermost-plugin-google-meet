@@ -156,6 +156,22 @@ func TestFindScheduledInstance_PicksClosestAmongOverlapping(t *testing.T) {
 	assert.Equal(t, "evt-later", instance.InstanceID)
 }
 
+func TestFindScheduledInstance_RejectsEventStartingBeforeMatchWindow(t *testing.T) {
+	at := time.Date(2026, 8, 3, 10, 0, 0, 0, time.UTC)
+	start := at.Add(-calendarMatchLead - time.Minute)
+	event := timedEvent("evt-too-early", "abc-mnop-xyz", start, at.Add(10*time.Minute))
+
+	withCalendarServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(calendarEventsResponse(t, []calendarEvent{event}))
+	})
+
+	p := &Plugin{}
+	instance, err := p.findScheduledInstance(newTestToken(), "abc-mnop-xyz", at)
+	require.NoError(t, err)
+	assert.Nil(t, instance, "an event starting outside the match window must not match even if it ends inside the query window")
+}
+
 func TestFindScheduledInstance_InsufficientScopes(t *testing.T) {
 	withCalendarServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusForbidden)

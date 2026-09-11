@@ -130,7 +130,7 @@ In the Mattermost System Console, configure:
 - `Post Recordings, Transcripts and Smart Notes`: enables the background poller that watches subscribed and ad-hoc meetings and posts artifacts as thread replies. Default: enabled.
 - `Polling Interval (seconds)`: how often the poller checks Google for new conferences and artifacts. Default: 60 seconds. Minimum: 30 seconds.
 - `Conference Start Cooldown (hours)`: suppresses a "conference started" post on a subscribed space if it starts within this many hours of the previous conference ending on that space — avoids re-announcing when people reopen a meeting link after it has ended. Used as a fallback for conferences with no matching calendar event when `Sync Conference Posts to Calendar Schedule` is enabled. Default: 12 hours. Set to `0` to disable.
-- `Sync Conference Posts to Calendar Schedule`: times "conference started" posts on subscribed spaces to the organizer's calendar event instead of the moment someone first joins. Default: disabled.
+- `Sync Conference Posts to Calendar Schedule`: times "conference started" posts on subscribed spaces to the subscription creator's primary calendar event instead of the moment someone first joins. Default: disabled.
 
 Important notes:
 

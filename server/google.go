@@ -108,7 +108,7 @@ func mandatoryScopes(config *configuration) []string {
 // granted scope string Google returns in the token response.
 func missingScopes(granted string, required []string) []string {
 	grantedSet := make(map[string]bool, len(required))
-	for _, s := range strings.Fields(granted) {
+	for s := range strings.FieldsSeq(granted) {
 		grantedSet[s] = true
 	}
 

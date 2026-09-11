@@ -146,6 +146,9 @@ func (p *Plugin) findScheduledInstance(token *kvstore.OAuth2Token, meetingCode s
 		if instance == nil {
 			continue
 		}
+		if instance.Start.Before(at.Add(-calendarMatchLead)) || instance.Start.After(at.Add(calendarMatchTrail)) {
+			continue
+		}
 		delta := instance.Start.Sub(at)
 		if delta < 0 {
 			delta = -delta

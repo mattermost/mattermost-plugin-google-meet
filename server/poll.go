@@ -313,6 +313,11 @@ func (p *Plugin) classifyAgainstCalendarInstance(store kvstore.KVStore, sub *kvs
 	}
 
 	if time.Now().Before(instance.Start) {
+		for _, ann := range sub.ScheduledAnnouncements {
+			if ann.ConferenceName == record.Name {
+				return true, nil
+			}
+		}
 		sub.ScheduledAnnouncements = append(sub.ScheduledAnnouncements, kvstore.ScheduledAnnouncement{
 			ConferenceName:  record.Name,
 			EventInstanceID: instance.InstanceID,
@@ -329,6 +334,22 @@ func (p *Plugin) classifyAgainstCalendarInstance(store kvstore.KVStore, sub *kvs
 // postAndBindToCalendarInstance creates the conference-started post for a calendar-matched
 // conference and records the EventPostBinding so later records in the same instance reuse it.
 func (p *Plugin) postAndBindToCalendarInstance(store kvstore.KVStore, sub *kvstore.Subscription, record *conferenceRecord, instance *calendarInstance) error {
+	if idx := findEventPostBindingIndex(sub.EventPostBindings, instance.InstanceID); idx >= 0 {
+		binding := &sub.EventPostBindings[idx]
+		state := &kvstore.ConferencePostState{
+			MeetingPostID: binding.MeetingPostID,
+			ThreadRootID:  binding.MeetingPostID,
+			ChannelID:     sub.ChannelID,
+		}
+		if err := store.StoreConferencePostState(record.Name, state); err != nil {
+			return fmt.Errorf("failed to bind conference to existing calendar post: %w", err)
+		}
+		if !slices.Contains(binding.ConferenceNames, record.Name) {
+			binding.ConferenceNames = append(binding.ConferenceNames, record.Name)
+		}
+		return nil
+	}
+
 	postID, err := p.postConferenceStarted(sub, record, instance)
 	if err != nil {
 		return fmt.Errorf("failed to post conference started: %w", err)
@@ -406,6 +427,11 @@ func (p *Plugin) processDueScheduledAnnouncements(store kvstore.KVStore, sub *kv
 
 		record, err := p.getConferenceRecord(token, ann.ConferenceName)
 		if err != nil {
+			if now.After(ann.EventEnd.Add(eventBindingRetention)) {
+				p.API.LogWarn("Dropping expired deferred conference announcement after refresh failure", "conference", ann.ConferenceName, "error", err.Error())
+				changed = true
+				continue
+			}
 			p.API.LogWarn("Failed to refresh deferred conference record; will retry next poll", "conference", ann.ConferenceName, "error", err.Error())
 			remaining = append(remaining, ann)
 			continue
@@ -498,7 +524,7 @@ func (p *Plugin) maybeMarkConferenceEnded(sub *kvstore.Subscription, state *kvst
 			state.MeetingEndedPosted = true
 			return true
 		}
-		latestEnd, allEnded := aggregateBindingEnd(binding.ConferenceNames, resolvedEnd)
+		latestEnd, allEnded := aggregateBindingEnd(binding.ConferenceNames, sub.ActiveConferenceIDs, resolvedEnd)
 		if !allEnded || time.Now().Before(latestEnd.Add(conferenceRejoinGrace)) {
 			return false
 		}
@@ -519,11 +545,14 @@ func (p *Plugin) maybeMarkConferenceEnded(sub *kvstore.Subscription, state *kvst
 	return true
 }
 
-// aggregateBindingEnd returns the latest known end time across names and whether all of them
-// have a known (non-zero) end time yet.
-func aggregateBindingEnd(names []string, resolvedEnd map[string]*time.Time) (time.Time, bool) {
+// aggregateBindingEnd returns the latest known end time across actively tracked names and whether
+// all tracked names have a known (non-zero) end time.
+func aggregateBindingEnd(names, activeNames []string, resolvedEnd map[string]*time.Time) (time.Time, bool) {
 	var latest time.Time
 	for _, name := range names {
+		if !slices.Contains(activeNames, name) {
+			continue
+		}
 		end := resolvedEnd[name]
 		if end == nil || end.IsZero() {
 			return time.Time{}, false
