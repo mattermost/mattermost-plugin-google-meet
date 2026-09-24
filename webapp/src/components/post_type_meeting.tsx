@@ -46,9 +46,6 @@ const getStyle = makeStyleFromTheme((theme: Record<string, string>) => {
             fontSize: '14px',
             lineHeight: '26px',
         },
-        container: {
-            borderLeftColor: theme.sidebarHeaderBg,
-        },
     };
 });
 
@@ -178,10 +175,7 @@ const PostTypeMeeting = ({post, theme}: PostTypeMeetingProps) => {
                 {preText}
             </div>
             <div className='attachment__content'>
-                <div
-                    className='clearfix attachment__container'
-                    style={style.container}
-                >
+                <div className='clearfix attachment__container'>
                     <h5
                         className='mt-1'
                         style={style.title}
