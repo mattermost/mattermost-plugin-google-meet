@@ -189,6 +189,7 @@ func TestExchangeCodeForToken_Success(t *testing.T) {
 			TokenType:    "Bearer",
 			ExpiresIn:    3600,
 			RefreshToken: "refresh-456",
+			Scope:        meetScopeCreated,
 		}
 		w.WriteHeader(http.StatusOK)
 		err = json.NewEncoder(w).Encode(resp)
@@ -220,6 +221,94 @@ func TestExchangeCodeForToken_Success(t *testing.T) {
 	assert.Equal(t, "Bearer", token.TokenType)
 	assert.Equal(t, "refresh-456", token.RefreshToken)
 	assert.True(t, token.Expiry.After(time.Now()))
+}
+
+func TestExchangeCodeForToken_CalendarScopeOptional(t *testing.T) {
+	// The granted scope omits calendar.events.readonly (declined via Google's granular
+	// consent screen); the exchange should still succeed since it isn't mandatory.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resp := tokenResponse{
+			AccessToken:  "access-123",
+			TokenType:    "Bearer",
+			ExpiresIn:    3600,
+			RefreshToken: "refresh-456",
+			Scope:        meetScopeCreated + " " + meetScopeReadonly,
+		}
+		w.WriteHeader(http.StatusOK)
+		require.NoError(t, json.NewEncoder(w).Encode(resp))
+	}))
+	defer server.Close()
+
+	origTokenURL := googleTokenURL
+	origClient := httpClient
+	googleTokenURL = server.URL
+	httpClient = server.Client()
+	defer func() {
+		googleTokenURL = origTokenURL
+		httpClient = origClient
+	}()
+
+	p := &Plugin{}
+	p.setConfiguration(&configuration{
+		GoogleClientID:                "client-id",
+		GoogleClientSecret:            "client-secret",
+		EncryptionKey:                 "enc-key",
+		EnableConferenceArtifactPosts: true,
+		EnableCalendarScheduleSync:    true,
+	})
+	p.API = &mockPluginAPI{siteURL: "http://localhost:8065"}
+
+	token, err := p.exchangeCodeForToken("test-code")
+	require.NoError(t, err)
+	assert.Equal(t, "access-123", token.AccessToken)
+}
+
+func TestExchangeCodeForToken_MissingMandatoryScope(t *testing.T) {
+	// The user declined meetings.space.created itself, which the plugin cannot work
+	// without regardless of Calendar sync being enabled.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resp := tokenResponse{
+			AccessToken:  "access-123",
+			TokenType:    "Bearer",
+			ExpiresIn:    3600,
+			RefreshToken: "refresh-456",
+			Scope:        calendarScopeEventsReadonly,
+		}
+		w.WriteHeader(http.StatusOK)
+		require.NoError(t, json.NewEncoder(w).Encode(resp))
+	}))
+	defer server.Close()
+
+	origTokenURL := googleTokenURL
+	origClient := httpClient
+	googleTokenURL = server.URL
+	httpClient = server.Client()
+	defer func() {
+		googleTokenURL = origTokenURL
+		httpClient = origClient
+	}()
+
+	p := &Plugin{}
+	p.setConfiguration(&configuration{
+		GoogleClientID:             "client-id",
+		GoogleClientSecret:         "client-secret",
+		EncryptionKey:              "enc-key",
+		EnableCalendarScheduleSync: true,
+	})
+	p.API = &mockPluginAPI{siteURL: "http://localhost:8065"}
+
+	_, err := p.exchangeCodeForToken("test-code")
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, ErrMissingMandatoryScopes))
+	assert.Contains(t, err.Error(), meetScopeCreated)
+}
+
+func TestMissingScopes(t *testing.T) {
+	required := []string{meetScopeCreated, meetScopeReadonly}
+
+	assert.Empty(t, missingScopes(meetScopeCreated+" "+meetScopeReadonly+" "+calendarScopeEventsReadonly, required))
+	assert.Equal(t, []string{meetScopeReadonly}, missingScopes(meetScopeCreated, required))
+	assert.Equal(t, required, missingScopes("", required))
 }
 
 func TestExchangeCodeForToken_ErrorResponse(t *testing.T) {

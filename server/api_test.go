@@ -81,6 +81,13 @@ func (m *mockPluginAPI) GetChannel(channelID string) (*model.Channel, *model.App
 	return &model.Channel{Id: channelID, Type: model.ChannelTypePrivate}, nil
 }
 
+func (m *mockPluginAPI) GetDirectChannel(userID1, userID2 string) (*model.Channel, *model.AppError) {
+	if m.channelErr != nil {
+		return nil, m.channelErr
+	}
+	return &model.Channel{Id: "dm-" + userID1 + "-" + userID2, Type: model.ChannelTypeDirect}, nil
+}
+
 func (m *mockPluginAPI) CreatePost(post *model.Post) (*model.Post, *model.AppError) {
 	m.post = post
 	if m.captureAllPosts {
@@ -145,6 +152,7 @@ type mockKVStore struct {
 	conferencePosts   map[string]*kvstore.ConferencePostState
 	adHocPosts        map[string]*kvstore.AdHocMeetingPost
 	adHocIndex        []string
+	calendarNotices   map[string]bool
 	err               error
 	// storeConfStateErr, when set, makes StoreConferencePostState fail. Used to
 	// simulate a post-state persistence failure independent of other KV operations.
@@ -159,6 +167,7 @@ func newMockKVStore() *mockKVStore {
 		userSubIndex:    make(map[string][]string),
 		conferencePosts: make(map[string]*kvstore.ConferencePostState),
 		adHocPosts:      make(map[string]*kvstore.AdHocMeetingPost),
+		calendarNotices: make(map[string]bool),
 	}
 }
 
@@ -311,6 +320,15 @@ func (m *mockKVStore) RemoveFromAdHocIndex(spaceID string) error {
 	}
 	m.adHocIndex = filtered
 	return nil
+}
+
+func (m *mockKVStore) StoreCalendarReconnectNoticeSent(userID string) error {
+	m.calendarNotices[userID] = true
+	return nil
+}
+
+func (m *mockKVStore) HasCalendarReconnectNoticeSent(userID string) (bool, error) {
+	return m.calendarNotices[userID], nil
 }
 
 func setupPlugin(t *testing.T) (*Plugin, *mockPluginAPI, *mockKVStore) {

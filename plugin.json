@@ -19,7 +19,7 @@
         "bundle_path": "webapp/dist/main.js"
     },
     "settings_schema": {
-        "header": "**Setup instructions:** 1) Enable the [Google Meet REST API](https://console.cloud.google.com/apis/library/meet.googleapis.com). 2) Create an [OAuth 2.0 Client ID](https://console.cloud.google.com/apis/credentials) (Web application type). 3) The redirect URI will be shown here once the plugin is activated. 4) Enter the Client ID and Client Secret below.",
+        "header": "**Setup instructions:** 1) Enable the [Google Meet REST API](https://console.cloud.google.com/apis/library/meet.googleapis.com). If using calendar schedule sync, also enable the [Google Calendar API](https://console.cloud.google.com/apis/library/calendar-json.googleapis.com) in the same Google Cloud project. 2) Create an [OAuth 2.0 Client ID](https://console.cloud.google.com/apis/credentials) (Web application type). 3) The redirect URI will be shown here once the plugin is activated. 4) Enter the Client ID and Client Secret below.",
         "footer": "",
         "settings": [
             {
@@ -70,8 +70,15 @@
                 "key": "ConferenceStartCooldownHours",
                 "display_name": "Conference Start Cooldown (hours)",
                 "type": "number",
-                "help_text": "A new conference on a subscribed meeting space will not be announced if it starts within this many hours of the previous conference ending. Prevents duplicate conference-started posts when people rejoin a meeting link after it has ended. Set to 0 to disable. Default 12.",
+                "help_text": "A new conference on a subscribed meeting space will not be announced if it starts within this many hours of the previous conference ending. Prevents duplicate conference-started posts when people rejoin a meeting link after it has ended. Used as a fallback for conferences with no matching calendar event when Sync Conference Posts to Calendar Schedule is enabled. Set to 0 to disable. Default 12.",
                 "default": 12
+            },
+            {
+                "key": "EnableCalendarScheduleSync",
+                "display_name": "Sync Conference Posts to Calendar Schedule",
+                "type": "bool",
+                "help_text": "When enabled, conference-started posts for subscribed meeting spaces are timed to match the subscription creator's primary calendar event instead of the moment someone first joins, avoiding early-join drift and off-hours false positives. Administrators must enable the Google Calendar API in the same Google Cloud project. Requires the calendar.events.readonly OAuth scope; users must run /meet connect again to grant it after enabling this setting. Conferences with no matching calendar event fall back to the Conference Start Cooldown setting above. Default: disabled.",
+                "default": false
             }
         ]
     }
