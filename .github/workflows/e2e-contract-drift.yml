@@ -1,0 +1,78 @@
+# Compares the committed copies of Google's Discovery documents (e2e/playwright/fake-google/contract/specs)
+# with what Google publishes today. Fails only on breaking changes (a removed method, field or enum
+# value; a changed type, path or parameter; a newly required parameter); additive changes are listed
+# in the log for the next `npm run contract:update`. Downloads public documents only, so it needs no
+# secrets.
+#
+# Breaking drift opens a "Google API contract drift" issue (or comments on the open one), so it
+# reaches people instead of only turning a scheduled run red. A failed download only fails the run. Any push to master keeps the schedule alive
+# (GitHub disables schedules after 60 days without repository activity).
+name: e2e-contract-drift
+
+on:
+  schedule:
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      report: ${{ steps.check.outputs.report }}
+      drift: ${{ steps.check.outputs.drift }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+
+      # The checker is dependency-free (Node built-ins only), so no npm install.
+      - name: Check Google's published specs for drift
+        id: check
+        working-directory: e2e/playwright
+        run: |
+          set +e
+          npm run --silent contract:check > "$RUNNER_TEMP/drift.log" 2>&1
+          status=$?
+          cat "$RUNNER_TEMP/drift.log"
+          # contract:check exits 1 on breaking drift and 2 when a download failed.
+          echo "drift=$([ "$status" -eq 1 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          delimiter="report_$(openssl rand -hex 16)"
+          {
+            echo "report<<$delimiter"
+            tail -c 60000 "$RUNNER_TEMP/drift.log"
+            echo "$delimiter"
+          } >> "$GITHUB_OUTPUT"
+          exit $status
+
+  report:
+    needs: check
+    if: failure() && github.event_name == 'schedule' && needs.check.outputs.drift == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    steps:
+      - name: Open or update the drift issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          REPORT: ${{ needs.check.outputs.report }}
+        run: |
+          title="Google API contract drift"
+          body=$(printf 'The nightly e2e contract check found breaking changes in Google'"'"'s published API specs: %s\n\n```\n%s\n```\n\nRun `npm run contract:update` in e2e/playwright, review the diff, and update fake-google/server.ts and the plugin to match.' "$RUN_URL" "$REPORT")
+          existing=$(gh issue list --state open --search "in:title \"$title\"" --json number --jq '.[0].number')
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body "$body"
+          else
+            gh issue create --title "$title" --body "$body"
+          fi
