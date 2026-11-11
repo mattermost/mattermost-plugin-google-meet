@@ -70,7 +70,7 @@ jobs:
         run: |
           title="Google API contract drift"
           body=$(printf 'The nightly e2e contract check found breaking changes in Google'"'"'s published API specs: %s\n\n```\n%s\n```\n\nRun `npm run contract:update` in e2e/playwright, review the diff, and update fake-google/server.ts and the plugin to match.' "$RUN_URL" "$REPORT")
-          existing=$(gh issue list --state open --search "in:title \"$title\"" --json number --jq '.[0].number')
+          existing=$(gh issue list --state open --search "in:title \"$title\"" --json number --jq '.[0].number // empty')
           if [ -n "$existing" ]; then
             gh issue comment "$existing" --body "$body"
           else
