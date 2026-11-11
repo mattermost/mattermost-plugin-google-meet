@@ -65,20 +65,24 @@ const manifest: Record<string, {url: string; methods: string[]; fields: Record<s
 
 let breaking = 0;
 let additive = 0;
+let downloadFailures = 0;
 
 for (const [name, {url, methods, fields}] of Object.entries(manifest)) {
     // A download failure says nothing about drift, so it gets its own exit code (the nightly
-    // workflow only opens a drift issue on exit 1).
+    // workflow only opens a drift issue on exit 1). Keep checking the other APIs, so breaking
+    // drift found in one still exits 1 when another fails to download.
     let response: Response;
     try {
         response = await fetch(url);
     } catch (err) {
         console.error(`Failed to download ${url}: ${String(err)}`);
-        process.exit(2);
+        downloadFailures++;
+        continue;
     }
     if (!response.ok) {
         console.error(`Failed to download ${url}: ${response.status}`);
-        process.exit(2);
+        downloadFailures++;
+        continue;
     }
     const problems: string[] = [];
     const next = trim(await response.json() as Discovery, methods, fields, problems);
@@ -115,10 +119,17 @@ for (const [name, {url, methods, fields}] of Object.entries(manifest)) {
     console.log(`${name}: ${Object.keys(next.methods).length} methods, ${Object.keys(next.schemas).length} schemas`);
 }
 
+if (!check && downloadFailures > 0) {
+    process.exit(2);
+}
+
 if (check) {
     if (breaking > 0) {
         console.error(`\n${breaking} breaking change(s). Run \`npm run contract:update\`, review the diff, and update the fake and the plugin to match.`);
         process.exit(1);
+    }
+    if (downloadFailures > 0) {
+        process.exit(2);
     }
     console.log(additive > 0 ? `\n${additive} additive change(s); run \`npm run contract:update\` to pull them in.` : 'No drift.');
 }
@@ -351,8 +362,11 @@ function compareSchema(old: JsonSchema, next: JsonSchema, at: string, out: {brea
         const added = (next.enum ?? []).filter((v) => !(old.enum ?? []).includes(v));
         if (removed.length) {
             out.breaking.push(`${at} enum values removed: ${removed.join(', ')}`);
+        } else if (!old.enum) {
+            // A free string becoming an enum narrows what the plugin may send, as for parameters.
+            out.breaking.push(`${at} is now restricted to: ${next.enum!.join(', ')}`);
         }
-        if (added.length) {
+        if (added.length && old.enum) {
             out.additive.push(`${at} enum values added: ${added.join(', ')}`);
         }
     }

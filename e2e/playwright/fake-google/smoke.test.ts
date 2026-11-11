@@ -194,8 +194,13 @@ test('answers every Meet route the plugin calls, empty and populated, within the
     const listed = await google(token, 'GET', '/v2/conferenceRecords', filter(new Date(Date.now() - 3_600_000).toISOString()));
     assert.deepEqual(listed.body.conferenceRecords.map((r: Json) => r.name), [record.name]);
     assert.equal((await google(token, 'GET', `/v2/${record.name}`)).body.endTime, record.endTime);
-    assert.equal((await google(token, 'GET', `/v2/${record.name}/recordings`)).body.recordings[0].state, 'FILE_GENERATED');
-    assert.match((await google(token, 'GET', `/v2/${record.name}/transcripts`)).body.transcripts[0].docsDestination.exportUri, /^https:\/\/docs\.google\.com\//);
+    const recording = (await google(token, 'GET', `/v2/${record.name}/recordings`)).body.recordings[0];
+    assert.equal(recording.state, 'FILE_GENERATED');
+    // Destination IDs are bare (no files/ or documents/ prefix), as Google returns them.
+    assert.match(recording.driveDestination.file, /^[^/]+$/);
+    const docs = (await google(token, 'GET', `/v2/${record.name}/transcripts`)).body.transcripts[0].docsDestination;
+    assert.match(docs.exportUri, /^https:\/\/docs\.google\.com\//);
+    assert.match(docs.document, /^[^/]+$/);
     const notes = (await google(token, 'GET', `/v2/${record.name}/smartNotes`)).body.smartNotes;
     assert.equal(notes[0].state, 'STARTED');
     assert.equal(notes[0].docsDestination, undefined);

@@ -65,7 +65,12 @@ jobs:
       - name: Start the stack
         working-directory: .
         run: |
-          (make e2e-env-up > "$RUNNER_TEMP/stack-up.log" 2>&1; echo $? > "$RUNNER_TEMP/stack-up.exit") &
+          # The step runs under `bash -e`, so catch make's status, or a failure never writes the file.
+          (
+            status=0
+            make e2e-env-up > "$RUNNER_TEMP/stack-up.log" 2>&1 || status=$?
+            echo "$status" > "$RUNNER_TEMP/stack-up.exit"
+          ) &
 
       - name: Build the plugin bundle
         working-directory: .

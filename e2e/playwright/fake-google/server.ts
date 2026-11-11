@@ -669,7 +669,8 @@ function control(method: string, segments: string[], body: Json): Result {
                 name: `${record.name}/${collection}/${id}`,
                 state: 'STARTED',
                 startTime: record.startTime,
-                resource: isDoc ? `documents/${id}` : `files/${id}`,
+                // Google's driveDestination.file and docsDestination.document are bare IDs.
+                resource: id,
                 exportUri: isDoc ? `https://docs.google.com/document/d/${id}/edit` : `https://drive.google.com/file/d/${id}/view`,
             };
             list.push(artifact);

@@ -33,4 +33,5 @@ async function waitUntilQuiet(quietMs = 1_000, timeoutMs = 15_000) {
         }
         seen = now;
     }
+    throw new Error(`Fake Google was still receiving requests ${timeoutMs / 1000}s after the last test, so late contract violations could be missed.`);
 }
