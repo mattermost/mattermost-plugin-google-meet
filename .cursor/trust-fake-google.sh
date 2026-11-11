@@ -8,6 +8,8 @@ set -euo pipefail
 
 cd "$(dirname "$0")/../e2e/playwright"
 
+export E2E_FAKE_HTTPS_PORT="${E2E_FAKE_HTTPS_PORT:-443}"
+
 ca="$(mktemp)"
 trap 'rm -f "$ca"' EXIT
 docker compose run --rm --no-deps -T --entrypoint cat certs /certs/ca.crt > "$ca"
