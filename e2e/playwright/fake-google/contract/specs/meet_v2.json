@@ -1,0 +1,394 @@
+{
+  "api": "meet",
+  "version": "v2",
+  "methods": {
+    "meet.conferenceRecords.get": {
+      "httpMethod": "GET",
+      "path": "/v2/conferenceRecords/{conferenceRecordsId}",
+      "parameters": {
+        "name": {
+          "type": "string",
+          "location": "path",
+          "required": true
+        }
+      },
+      "response": "ConferenceRecord"
+    },
+    "meet.conferenceRecords.list": {
+      "httpMethod": "GET",
+      "path": "/v2/conferenceRecords",
+      "parameters": {
+        "filter": {
+          "type": "string",
+          "location": "query"
+        },
+        "pageToken": {
+          "type": "string",
+          "location": "query"
+        },
+        "pageSize": {
+          "type": "integer",
+          "location": "query",
+          "format": "int32"
+        }
+      },
+      "response": "ListConferenceRecordsResponse"
+    },
+    "meet.conferenceRecords.recordings.list": {
+      "httpMethod": "GET",
+      "path": "/v2/conferenceRecords/{conferenceRecordsId}/recordings",
+      "parameters": {
+        "parent": {
+          "type": "string",
+          "location": "path",
+          "required": true
+        },
+        "pageSize": {
+          "type": "integer",
+          "location": "query",
+          "format": "int32"
+        },
+        "pageToken": {
+          "type": "string",
+          "location": "query"
+        }
+      },
+      "response": "ListRecordingsResponse"
+    },
+    "meet.conferenceRecords.smartNotes.list": {
+      "httpMethod": "GET",
+      "path": "/v2/conferenceRecords/{conferenceRecordsId}/smartNotes",
+      "parameters": {
+        "pageSize": {
+          "type": "integer",
+          "location": "query",
+          "format": "int32"
+        },
+        "pageToken": {
+          "type": "string",
+          "location": "query"
+        },
+        "parent": {
+          "type": "string",
+          "location": "path",
+          "required": true
+        }
+      },
+      "response": "ListSmartNotesResponse"
+    },
+    "meet.conferenceRecords.transcripts.entries.list": {
+      "httpMethod": "GET",
+      "path": "/v2/conferenceRecords/{conferenceRecordsId}/transcripts/{transcriptsId}/entries",
+      "parameters": {
+        "pageToken": {
+          "type": "string",
+          "location": "query"
+        },
+        "pageSize": {
+          "type": "integer",
+          "location": "query",
+          "format": "int32"
+        },
+        "parent": {
+          "type": "string",
+          "location": "path",
+          "required": true
+        }
+      },
+      "response": "ListTranscriptEntriesResponse"
+    },
+    "meet.conferenceRecords.transcripts.list": {
+      "httpMethod": "GET",
+      "path": "/v2/conferenceRecords/{conferenceRecordsId}/transcripts",
+      "parameters": {
+        "pageSize": {
+          "type": "integer",
+          "location": "query",
+          "format": "int32"
+        },
+        "parent": {
+          "type": "string",
+          "location": "path",
+          "required": true
+        },
+        "pageToken": {
+          "type": "string",
+          "location": "query"
+        }
+      },
+      "response": "ListTranscriptsResponse"
+    },
+    "meet.spaces.create": {
+      "httpMethod": "POST",
+      "path": "/v2/spaces",
+      "parameters": {},
+      "request": "Space",
+      "response": "Space"
+    },
+    "meet.spaces.get": {
+      "httpMethod": "GET",
+      "path": "/v2/spaces/{spacesId}",
+      "parameters": {
+        "name": {
+          "type": "string",
+          "location": "path",
+          "required": true
+        }
+      },
+      "response": "Space"
+    }
+  },
+  "schemas": {
+    "ConferenceRecord": {
+      "type": "object",
+      "properties": {
+        "endTime": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "expireTime": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "name": {
+          "type": "string"
+        },
+        "space": {
+          "type": "string"
+        },
+        "startTime": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "additionalProperties": false
+    },
+    "DocsDestination": {
+      "type": "object",
+      "properties": {
+        "document": {
+          "type": "string"
+        },
+        "exportUri": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "DriveDestination": {
+      "type": "object",
+      "properties": {
+        "exportUri": {
+          "type": "string"
+        },
+        "file": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "ListConferenceRecordsResponse": {
+      "type": "object",
+      "properties": {
+        "conferenceRecords": {
+          "type": "array",
+          "items": {
+            "$ref": "ConferenceRecord"
+          }
+        },
+        "nextPageToken": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "ListRecordingsResponse": {
+      "type": "object",
+      "properties": {
+        "nextPageToken": {
+          "type": "string"
+        },
+        "recordings": {
+          "type": "array",
+          "items": {
+            "$ref": "Recording"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "ListSmartNotesResponse": {
+      "type": "object",
+      "properties": {
+        "nextPageToken": {
+          "type": "string"
+        },
+        "smartNotes": {
+          "type": "array",
+          "items": {
+            "$ref": "SmartNote"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "ListTranscriptEntriesResponse": {
+      "type": "object",
+      "properties": {
+        "nextPageToken": {
+          "type": "string"
+        },
+        "transcriptEntries": {
+          "type": "array",
+          "items": {
+            "$ref": "TranscriptEntry"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "ListTranscriptsResponse": {
+      "type": "object",
+      "properties": {
+        "nextPageToken": {
+          "type": "string"
+        },
+        "transcripts": {
+          "type": "array",
+          "items": {
+            "$ref": "Transcript"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "Recording": {
+      "type": "object",
+      "properties": {
+        "driveDestination": {
+          "$ref": "DriveDestination"
+        },
+        "endTime": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "name": {
+          "type": "string"
+        },
+        "startTime": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "STATE_UNSPECIFIED",
+            "STARTED",
+            "ENDED",
+            "FILE_GENERATED"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "SmartNote": {
+      "type": "object",
+      "properties": {
+        "docsDestination": {
+          "$ref": "DocsDestination"
+        },
+        "endTime": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "name": {
+          "type": "string"
+        },
+        "startTime": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "STATE_UNSPECIFIED",
+            "STARTED",
+            "ENDED",
+            "FILE_GENERATED"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "Space": {
+      "type": "object",
+      "properties": {
+        "meetingCode": {
+          "type": "string"
+        },
+        "meetingUri": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Transcript": {
+      "type": "object",
+      "properties": {
+        "docsDestination": {
+          "$ref": "DocsDestination"
+        },
+        "endTime": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "name": {
+          "type": "string"
+        },
+        "startTime": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "STATE_UNSPECIFIED",
+            "STARTED",
+            "ENDED",
+            "FILE_GENERATED"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "TranscriptEntry": {
+      "type": "object",
+      "properties": {
+        "endTime": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "languageCode": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "participant": {
+          "type": "string"
+        },
+        "startTime": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

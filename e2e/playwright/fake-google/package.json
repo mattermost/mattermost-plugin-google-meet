@@ -1,0 +1,6 @@
+{
+  "name": "fake-google",
+  "private": true,
+  "type": "module",
+  "description": "Fake Google OAuth, Meet REST API v2 and Calendar API v3 for the e2e PR lane. No dependencies: it runs in a plain node:24 container."
+}

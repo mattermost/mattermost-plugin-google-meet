@@ -1,0 +1,7 @@
+{
+  "comment": "Token encryption vector shared by e2e_crypto_vector_test.go and e2e/playwright (lib/crypto.ts, script/verify_crypto_vector.ts). Both sides read this file, so they cannot drift apart.",
+  "key": "e2e-test-encryption-key",
+  "nonceHex": "000102030405060708090a0b",
+  "plaintext": "{\"access_token\":\"e2e-access\",\"token_type\":\"Bearer\",\"refresh_token\":\"e2e-refresh\",\"expiry\":\"2026-01-01T00:00:00Z\"}",
+  "ciphertextHex": "000102030405060708090a0b4fe18cf9a9a731668b03c7e0e8000f16858a7cf9ca13e793520fe10e0ce691606f1c1af41650655396bcc3b56aa415d6d78d04cccd3f50e7a991e8fc421675c04689e2a5f62adf4939789311c11052139f664cd47e1f7c8cac4f2a731c284fe863055e23630bff2653e18d8010f49e72256f10ed9d386028357dbb5869845afa89"
+}

@@ -1,0 +1,40 @@
+{
+  "meet_v2": {
+    "url": "https://meet.googleapis.com/$discovery/rest?version=v2",
+    "methods": [
+      "meet.spaces.create",
+      "meet.spaces.get",
+      "meet.conferenceRecords.list",
+      "meet.conferenceRecords.get",
+      "meet.conferenceRecords.recordings.list",
+      "meet.conferenceRecords.transcripts.list",
+      "meet.conferenceRecords.transcripts.entries.list",
+      "meet.conferenceRecords.smartNotes.list"
+    ],
+    "fields": {
+      "ConferenceRecord": ["endTime", "expireTime", "name", "space", "startTime"],
+      "DocsDestination": ["document", "exportUri"],
+      "DriveDestination": ["exportUri", "file"],
+      "ListConferenceRecordsResponse": ["conferenceRecords", "nextPageToken"],
+      "ListRecordingsResponse": ["nextPageToken", "recordings"],
+      "ListSmartNotesResponse": ["nextPageToken", "smartNotes"],
+      "ListTranscriptEntriesResponse": ["nextPageToken", "transcriptEntries"],
+      "ListTranscriptsResponse": ["nextPageToken", "transcripts"],
+      "Recording": ["driveDestination", "endTime", "name", "startTime", "state"],
+      "SmartNote": ["docsDestination", "endTime", "name", "startTime", "state"],
+      "Space": ["meetingCode", "meetingUri", "name"],
+      "Transcript": ["docsDestination", "endTime", "name", "startTime", "state"],
+      "TranscriptEntry": ["endTime", "languageCode", "name", "participant", "startTime", "text"]
+    }
+  },
+  "calendar_v3": {
+    "url": "https://www.googleapis.com/discovery/v1/apis/calendar/v3/rest",
+    "methods": ["calendar.events.list"],
+    "fields": {
+      "ConferenceData": ["conferenceId"],
+      "Event": ["conferenceData", "end", "id", "kind", "start", "status", "summary"],
+      "EventDateTime": ["date", "dateTime", "timeZone"],
+      "Events": ["items", "kind", "nextPageToken", "summary", "timeZone"]
+    }
+  }
+}

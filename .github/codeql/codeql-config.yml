@@ -3,3 +3,5 @@ name: "CodeQL config"
 paths-ignore:
   - '**/*_test.go'
   - '**/*.test.*'
+  # The e2e suite and its fake Google run only in tests and never ship with the plugin.
+  - 'e2e/**'
