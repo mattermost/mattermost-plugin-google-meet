@@ -95,7 +95,6 @@ const state = {
     failures: [] as Failure[],
     requests: [] as LoggedRequest[],
     violations: [] as string[],
-    divergences: [] as string[],
     // Violations that arrived after the test that caused them had been checked (the poller runs
     // asynchronously). The next test moves them here; global teardown fails the run on them.
     late: [] as string[],
@@ -126,7 +125,6 @@ function reset(keepViolations = false) {
         return;
     }
     state.violations = [];
-    state.divergences = [];
     state.late = [];
     state.lastChecked = '';
 }
@@ -721,12 +719,11 @@ function control(method: string, segments: string[], body: Json): Result {
         return {status: 200, body: {value: state.requests}};
     }
     if (section === 'violations') {
-        const current = {value: state.violations, divergences: state.divergences};
+        const current = {value: state.violations};
         if (method === 'POST' && action === 'take') {
             // Read and clear in one step, so nothing recorded in between is lost.
             state.lastChecked = typeof body?.test === 'string' ? body.test : '';
             state.violations = [];
-            state.divergences = [];
             return {status: 200, body: current};
         }
         if (method === 'POST' && action === 'defer') {
@@ -735,7 +732,6 @@ function control(method: string, segments: string[], body: Json): Result {
             const deferred = state.violations.map((v) => `[${after}] ${v}`);
             state.late.push(...deferred);
             state.violations = [];
-            state.divergences = [];
             return {status: 200, body: {...current, value: deferred}};
         }
         return {status: 200, body: {...current, late: state.late, lastChecked: state.lastChecked}};

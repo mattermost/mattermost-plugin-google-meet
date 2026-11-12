@@ -12,9 +12,6 @@ export default async function globalTeardown() {
     // new request for a second first.
     await waitUntilQuiet();
     const contract = await fakeGoogle.violations();
-    for (const divergence of new Set(contract.divergences)) {
-        console.log(`Fake Google accepted something real Google would reject: ${divergence}`);
-    }
     const afterLast = contract.lastChecked ? `after "${contract.lastChecked}"` : 'before any test';
     const unreported = [...new Set([...contract.late, ...contract.value.map((v) => `[${afterLast}] ${v}`)])];
     if (unreported.length > 0) {

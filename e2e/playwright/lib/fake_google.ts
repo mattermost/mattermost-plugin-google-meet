@@ -53,9 +53,9 @@ export const fakeGoogle = {
     requests: async () => (await control<{value: FakeRequest[]}>('GET', 'requests')).value,
 
     /** Everything recorded so far, including `late`: violations deferred past the test that caused them. */
-    violations: () => control<{value: string[]; divergences: string[]; late: string[]; lastChecked: string}>('GET', 'violations'),
+    violations: () => control<{value: string[]; late: string[]; lastChecked: string}>('GET', 'violations'),
     /** Returns and clears the current violations in one step; `test` is what later late violations are labelled after. */
-    takeViolations: (test: string) => control<{value: string[]; divergences: string[]}>('POST', 'violations/take', {test}),
+    takeViolations: (test: string) => control<{value: string[]}>('POST', 'violations/take', {test}),
     /** Moves the current violations to `late`, labelled with the last checked test, which global teardown fails the run on. */
-    deferViolations: () => control<{value: string[]; divergences: string[]}>('POST', 'violations/defer'),
+    deferViolations: () => control<{value: string[]}>('POST', 'violations/defer'),
 };

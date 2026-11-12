@@ -34,9 +34,6 @@ export const test = base.extend<{fakeGoogleContract: void}>({
             await use();
 
             const contract = await fakeGoogle.takeViolations(`${path.basename(testInfo.file)} › ${testInfo.title}`);
-            for (const divergence of new Set(contract.divergences)) {
-                testInfo.annotations.push({type: 'fake-google divergence', description: divergence});
-            }
             if (contract.value.length > 0) {
                 throw new Error(`Fake Google saw traffic that breaks the Google API contract:\n${[...new Set(contract.value)].join('\n')}`);
             }
