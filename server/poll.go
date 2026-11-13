@@ -687,6 +687,7 @@ func (p *Plugin) pollConferenceArtifacts(store kvstore.KVStore, token *kvstore.O
 	if err != nil {
 		p.API.LogWarn("Failed to list transcripts", "conference", confName, "error", err.Error())
 	}
+	speakers := p.newParticipantNames(token)
 	for i := range transcripts {
 		tr := &transcripts[i]
 		if tr.State != meetStateFileGenerated {
@@ -695,7 +696,7 @@ func (p *Plugin) pollConferenceArtifacts(store kvstore.KVStore, token *kvstore.O
 		if slices.Contains(state.PostedTranscriptIDs, tr.Name) {
 			continue
 		}
-		if err = p.postTranscript(token, state.ChannelID, threadRootID, tr); err != nil {
+		if err = p.postTranscript(token, speakers, state.ChannelID, threadRootID, tr); err != nil {
 			p.API.LogWarn("Failed to post transcript", "transcript", tr.Name, "error", err.Error())
 			continue
 		}

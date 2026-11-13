@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"strings"
 	"testing"
 	"time"
 
@@ -203,61 +202,97 @@ func TestListRecordings_Success(t *testing.T) {
 	assert.Equal(t, exportURI, got[0].DriveDestination.ExportURI)
 }
 
-func TestListTranscriptEntries_Success(t *testing.T) {
-	now := time.Now().UTC()
-	entries := []transcriptEntry{
-		{
-			Name:      "conferenceRecords/rec1/transcripts/t1/entries/e1",
-			Text:      "Hello world",
-			StartTime: now,
-			EndTime:   now.Add(2 * time.Second),
-		},
-	}
-	entries[0].ParticipantDevice.DisplayName = "Alice"
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.Contains(t, r.URL.Path, "/entries")
-		w.WriteHeader(http.StatusOK)
-		require.NoError(t, json.NewEncoder(w).Encode(map[string]any{
-			"transcriptEntries": entries,
-		}))
-	}))
-	defer server.Close()
-
+// withMeetServer points the Meet client at a test server for the rest of the test.
+func withMeetServer(t *testing.T, handler http.HandlerFunc) {
+	t.Helper()
+	server := httptest.NewServer(handler)
 	origURL := googleMeetURL
 	origClient := httpClient
 	googleMeetURL = server.URL + "/v2"
 	httpClient = server.Client()
-	defer func() { googleMeetURL = origURL; httpClient = origClient }()
+	t.Cleanup(func() {
+		googleMeetURL = origURL
+		httpClient = origClient
+		server.Close()
+	})
+}
+
+func TestListTranscriptEntries_Success(t *testing.T) {
+	// Shaped like Meet API v2's ListTranscriptEntriesResponse: the speaker is a participant
+	// resource name, with no display name on the entry.
+	withMeetServer(t, func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/v2/conferenceRecords/rec1/transcripts/t1/entries", r.URL.Path)
+		_, _ = w.Write([]byte(`{"transcriptEntries": [{
+			"name": "conferenceRecords/rec1/transcripts/t1/entries/e1",
+			"participant": "conferenceRecords/rec1/participants/p1",
+			"text": "Hello world",
+			"languageCode": "en-US",
+			"startTime": "2026-01-15T09:30:05Z",
+			"endTime": "2026-01-15T09:30:07Z"
+		}]}`))
+	})
 
 	p := &Plugin{}
 	got, err := p.listTranscriptEntries(newTestToken(), "conferenceRecords/rec1/transcripts/t1")
 	require.NoError(t, err)
 	require.Len(t, got, 1)
-	assert.Equal(t, "Alice", got[0].ParticipantDevice.DisplayName)
+	assert.Equal(t, "conferenceRecords/rec1/participants/p1", got[0].Participant)
 	assert.Equal(t, "Hello world", got[0].Text)
+	assert.Equal(t, time.Date(2026, 1, 15, 9, 30, 5, 0, time.UTC), got[0].StartTime)
+}
+
+func TestGetParticipant_DisplayNameByKind(t *testing.T) {
+	// Meet API v2 sets exactly one of signedinUser, anonymousUser and phoneUser.
+	participants := map[string]string{
+		"/v2/conferenceRecords/rec1/participants/signedin": `{"name": "conferenceRecords/rec1/participants/signedin", "earliestStartTime": "2026-01-15T09:30:00Z", "signedinUser": {"user": "users/123", "displayName": "Alice Example"}}`,
+		"/v2/conferenceRecords/rec1/participants/anon":     `{"name": "conferenceRecords/rec1/participants/anon", "anonymousUser": {"displayName": "Guest Visitor"}}`,
+		"/v2/conferenceRecords/rec1/participants/phone":    `{"name": "conferenceRecords/rec1/participants/phone", "phoneUser": {"displayName": "+1 555-***-**12"}}`,
+		"/v2/conferenceRecords/rec1/participants/unnamed":  `{"name": "conferenceRecords/rec1/participants/unnamed", "signedinUser": {"user": "users/456"}}`,
+	}
+	withMeetServer(t, func(w http.ResponseWriter, r *http.Request) {
+		body, ok := participants[r.URL.Path]
+		if !ok {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		_, _ = w.Write([]byte(body))
+	})
+
+	p := &Plugin{}
+	for id, want := range map[string]string{"signedin": "Alice Example", "anon": "Guest Visitor", "phone": "+1 555-***-**12", "unnamed": ""} {
+		t.Run(id, func(t *testing.T) {
+			got, err := p.getParticipant(newTestToken(), "conferenceRecords/rec1/participants/"+id)
+			require.NoError(t, err)
+			assert.Equal(t, "conferenceRecords/rec1/participants/"+id, got.Name)
+			assert.Equal(t, want, got.displayName())
+		})
+	}
+
+	_, err := p.getParticipant(newTestToken(), "conferenceRecords/rec1/participants/missing")
+	require.Error(t, err)
 }
 
 func TestBuildTranscriptText(t *testing.T) {
 	ts := time.Date(2024, 1, 15, 9, 30, 5, 0, time.UTC)
 	entries := []transcriptEntry{
-		{Text: "Hello", StartTime: ts, EndTime: ts.Add(3 * time.Second)},
-		{Text: "How are you?", StartTime: ts.Add(5 * time.Second), EndTime: ts.Add(8 * time.Second)},
-		{Text: "", StartTime: ts.Add(10 * time.Second)}, // blank — should be skipped
+		{Participant: "conferenceRecords/rec1/participants/alice", Text: "Hello", StartTime: ts, EndTime: ts.Add(3 * time.Second)},
+		{Participant: "conferenceRecords/rec1/participants/bob", Text: "How are you?", StartTime: ts.Add(5 * time.Second), EndTime: ts.Add(8 * time.Second)},
+		{Participant: "conferenceRecords/rec1/participants/carol", Text: "", StartTime: ts.Add(10 * time.Second)}, // blank — should be skipped
+		{Participant: "conferenceRecords/rec1/participants/unknown", Text: "Anyone there?", StartTime: ts.Add(15 * time.Second), EndTime: ts.Add(17 * time.Second)},
 	}
-	entries[0].ParticipantDevice.DisplayName = "Alice"
-	entries[1].ParticipantDevice.DisplayName = "Bob"
+	speakers := map[string]string{
+		"conferenceRecords/rec1/participants/alice":   "Alice",
+		"conferenceRecords/rec1/participants/bob":     "Bob",
+		"conferenceRecords/rec1/participants/unknown": "",
+	}
 
-	result := buildTranscriptText(entries)
+	result := buildTranscriptText(entries, speakers)
 
 	// Must be valid WebVTT (the mattermost-ai plugin parses it with astisub.ReadFromWebVTT).
-	assert.True(t, strings.HasPrefix(result, "WEBVTT\n"), "output must start with WEBVTT header")
-	assert.Contains(t, result, "09:30:05.000 --> 09:30:08.000")
-	assert.Contains(t, result, "Alice: Hello")
-	assert.Contains(t, result, "09:30:10.000 --> 09:30:13.000")
-	assert.Contains(t, result, "Bob: How are you?")
-	// Blank entry must be omitted.
-	assert.NotContains(t, result, "09:30:15")
+	assert.Equal(t, "WEBVTT\n\n"+
+		"09:30:05.000 --> 09:30:08.000\nAlice: Hello\n\n"+
+		"09:30:10.000 --> 09:30:13.000\nBob: How are you?\n\n"+
+		"09:30:20.000 --> 09:30:22.000\nAnyone there?\n\n", result)
 }
 
 func TestMeetGet_InsufficientScopes(t *testing.T) {

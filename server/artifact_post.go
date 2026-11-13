@@ -370,8 +370,38 @@ func (p *Plugin) postRecording(channelID, rootPostID string, rec *meetRecording)
 	return nil
 }
 
-// postTranscript creates a reply post for a transcript, uploading a .txt file built from entries.
-func (p *Plugin) postTranscript(token *kvstore.OAuth2Token, channelID, rootPostID string, tr *meetTranscript) error {
+// participantNames resolves transcript speakers to display names for one conference, fetching
+// each participant at most once. A failed lookup is cached as an empty name, so the speaker's
+// lines are posted without a name instead of failing the transcript.
+type participantNames struct {
+	p     *Plugin
+	token *kvstore.OAuth2Token
+	names map[string]string
+}
+
+func (p *Plugin) newParticipantNames(token *kvstore.OAuth2Token) *participantNames {
+	return &participantNames{p: p, token: token, names: map[string]string{}}
+}
+
+func (n *participantNames) lookup(participant string) string {
+	if participant == "" {
+		return ""
+	}
+	if name, ok := n.names[participant]; ok {
+		return name
+	}
+	name := ""
+	if resolved, err := n.p.getParticipant(n.token, participant); err != nil {
+		n.p.API.LogWarn("Failed to get transcript participant; posting their lines without a name", "participant", participant, "error", err.Error())
+	} else {
+		name = resolved.displayName()
+	}
+	n.names[participant] = name
+	return name
+}
+
+// postTranscript creates a reply post for a transcript, uploading a .vtt file built from entries.
+func (p *Plugin) postTranscript(token *kvstore.OAuth2Token, speakers *participantNames, channelID, rootPostID string, tr *meetTranscript) error {
 	entries, err := p.listTranscriptEntries(token, tr.Name)
 	if err != nil {
 		p.API.LogWarn("Failed to list transcript entries; posting link only", "transcript", tr.Name, "error", err.Error())
@@ -380,7 +410,13 @@ func (p *Plugin) postTranscript(token *kvstore.OAuth2Token, channelID, rootPostI
 
 	var fileIDs []string
 	if len(entries) > 0 {
-		content := buildTranscriptText(entries)
+		names := make(map[string]string)
+		for _, e := range entries {
+			if strings.TrimSpace(e.Text) != "" {
+				names[e.Participant] = speakers.lookup(e.Participant)
+			}
+		}
+		content := buildTranscriptText(entries, names)
 		info, appErr := p.API.UploadFile([]byte(content), channelID, "transcript.vtt")
 		if appErr != nil {
 			p.API.LogWarn("Failed to upload transcript file", "transcript", tr.Name, "error", appErr.Error())
@@ -454,8 +490,9 @@ func (p *Plugin) postSmartNote(channelID, rootPostID string, sn *meetSmartNote) 
 
 // buildTranscriptText renders transcript entries as a WebVTT file.
 // The mattermost-ai plugin parses transcript attachments with astisub.ReadFromWebVTT,
-// so the output must be valid WebVTT.
-func buildTranscriptText(entries []transcriptEntry) string {
+// so the output must be valid WebVTT. speakers maps each entry's participant resource name to
+// its display name; a cue whose speaker has no name is written without one.
+func buildTranscriptText(entries []transcriptEntry, speakers map[string]string) string {
 	var buf bytes.Buffer
 	fmt.Fprintln(&buf, "WEBVTT")
 	fmt.Fprintln(&buf)
@@ -469,7 +506,7 @@ func buildTranscriptText(entries []transcriptEntry) string {
 			endTime = e.StartTime.Add(3 * time.Second)
 		}
 		fmt.Fprintf(&buf, "%s --> %s\n", vttTimestamp(e.StartTime), vttTimestamp(endTime))
-		speaker := e.ParticipantDevice.DisplayName
+		speaker := speakers[e.Participant]
 		if speaker != "" {
 			fmt.Fprintf(&buf, "%s: %s\n\n", speaker, text)
 		} else {
