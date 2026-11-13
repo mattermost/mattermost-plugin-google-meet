@@ -34,8 +34,8 @@ type configuration struct {
 	// EnableCalendarScheduleSync anchors "conference started" posts to the calendar event's
 	// scheduled start time (resolved via the subscription creator's primary calendar) instead
 	// of the moment the first participant joins. Conferences with no matching calendar event
-	// fall back to ConferenceStartCooldownHours (after unscheduledConferenceMinDuration on
-	// recurring-meeting subscriptions). Requires re-connecting Google to grant the
+	// fall back to ConferenceStartCooldownHours, except on recurring calendar meetings where
+	// they are suppressed. Requires re-connecting Google to grant the
 	// calendar.events.readonly scope.
 	EnableCalendarScheduleSync bool `json:"EnableCalendarScheduleSync"`
 }

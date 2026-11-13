@@ -46,23 +46,19 @@ type Subscription struct {
 	// reuse the post instead of creating a duplicate.
 	EventPostBindings []EventPostBinding `json:"event_post_bindings,omitempty"`
 	// LastRecurringMatchAt is the scheduled start of the latest conference matched to an
-	// occurrence of a recurring calendar event. It marks the subscription as backing a
-	// recurring meeting, which enables the stricter handling of unmatched conferences.
+	// occurrence of a recurring calendar event. While recent, the subscription is treated as a
+	// recurring calendar meeting: only calendar occurrences can announce a conference on it.
 	LastRecurringMatchAt time.Time `json:"last_recurring_match_at,omitzero"`
-	// PendingConferences are conferences on a recurring-meeting subscription with no matching
-	// calendar event (or whose calendar lookup is still being retried), held back until they
-	// prove to be a real meeting. Only populated when EnableCalendarScheduleSync is on.
+	// PendingConferences are conferences on a recurring calendar meeting whose calendar lookup
+	// failed and is being retried before deciding whether they can be announced.
 	PendingConferences []PendingConference `json:"pending_conferences,omitempty"`
 }
 
-// PendingConference is a conference-started post held back either because its calendar lookup
-// failed and is being retried, or because it matched no calendar event and hasn't yet run long
-// enough to be announced.
+// PendingConference is a conference awaiting a successful calendar lookup.
 type PendingConference struct {
-	ConferenceName         string    `json:"conference_name"`
-	FirstSeenAt            time.Time `json:"first_seen_at"`
-	CalendarLookupPending  bool      `json:"calendar_lookup_pending,omitempty"`
-	CalendarLookupAttempts int       `json:"calendar_lookup_attempts,omitempty"`
+	ConferenceName  string    `json:"conference_name"`
+	ConferenceStart time.Time `json:"conference_start"`
+	FirstSeenAt     time.Time `json:"first_seen_at"`
 }
 
 // ScheduledAnnouncement is a conference-started post waiting for its calendar event's
@@ -105,7 +101,7 @@ type ConferencePostState struct {
 	MeetingEndedPosted  bool     `json:"meeting_ended_posted,omitempty"`
 	// Suppressed marks a conference that was recognized but not announced, either because it
 	// started within the cooldown window of the previous conference ending on the same space or
-	// because it had no matching calendar event and ended too quickly to be a real meeting.
+	// because it didn't match any occurrence of the space's recurring calendar meeting.
 	Suppressed bool `json:"suppressed,omitempty"`
 }
 

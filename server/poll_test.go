@@ -1099,9 +1099,9 @@ func TestAggregateBindingEnd_TracksOnlyActiveConferences(t *testing.T) {
 	assert.Equal(t, ended, latest)
 }
 
-// TestPollSubscription_CalendarNoMatchFallsBackToCooldown verifies that, on a subscription not
-// known to back a recurring meeting, a conference with no matching calendar event (an unscheduled
-// meeting on the link) is announced immediately via the pre-existing cooldown heuristic.
+// TestPollSubscription_CalendarNoMatchFallsBackToCooldown verifies that a conference with no
+// matching calendar event (someone opening the link off-hours, or a meeting the creator wasn't
+// invited to) is still handled by the pre-existing cooldown heuristic rather than being dropped.
 func TestPollSubscription_CalendarNoMatchFallsBackToCooldown(t *testing.T) {
 	now := time.Now().UTC()
 	token := &kvstore.OAuth2Token{AccessToken: "test-token", Expiry: now.Add(time.Hour)}
@@ -1142,34 +1142,24 @@ func TestPollSubscription_CalendarNoMatchFallsBackToCooldown(t *testing.T) {
 	require.Len(t, api.allPosts, 1, "an unscheduled conference with no matching calendar event should still post via the cooldown fallback")
 	assert.Equal(t, postTypeConference, api.allPosts[0].Type)
 	assert.Empty(t, sub.ScheduledAnnouncements)
-	assert.Empty(t, sub.PendingConferences)
 	assert.Contains(t, sub.ActiveConferenceIDs, "conferenceRecords/rec1")
 }
 
-// pendingConferenceTestServer serves a single conference record (both from the list endpoint
-// while listed is true and from the per-record endpoint) plus a calendar endpoint driven by
-// calendarStatus/calendarItems, so tests can mutate them between poll cycles.
-type pendingConferenceTestServer struct {
-	record         conferenceRecord
-	listed         bool
+// recurringMeetingTestServer serves one listed conference record plus a calendar endpoint driven
+// by calendarStatus/calendarItems, so tests can change the calendar's answer between poll cycles.
+type recurringMeetingTestServer struct {
+	records        []conferenceRecord
 	calendarStatus int
 	calendarItems  []calendarEvent
 }
 
-func (s *pendingConferenceTestServer) install(t *testing.T) {
+func (s *recurringMeetingTestServer) install(t *testing.T) {
 	t.Helper()
 	withCalendarPollServer(t, func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/v2/conferenceRecords":
-			var records []conferenceRecord
-			if s.listed {
-				records = []conferenceRecord{s.record}
-			}
 			w.WriteHeader(http.StatusOK)
-			require.NoError(t, json.NewEncoder(w).Encode(map[string]any{"conferenceRecords": records}))
-		case "/v2/" + s.record.Name:
-			w.WriteHeader(http.StatusOK)
-			require.NoError(t, json.NewEncoder(w).Encode(s.record))
+			require.NoError(t, json.NewEncoder(w).Encode(map[string]any{"conferenceRecords": s.records}))
 		case "/calendars/primary/events":
 			if s.calendarStatus != http.StatusOK {
 				w.WriteHeader(s.calendarStatus)
@@ -1184,9 +1174,9 @@ func (s *pendingConferenceTestServer) install(t *testing.T) {
 	})
 }
 
-// newPendingConferenceTestPlugin returns a calendar-synced plugin and a subscription that has
+// newRecurringMeetingTestPlugin returns a calendar-synced plugin and a subscription that has
 // recently matched an occurrence of a recurring calendar event.
-func newPendingConferenceTestPlugin(t *testing.T) (*Plugin, *mockPluginAPI, *mockKVStore, *kvstore.Subscription) {
+func newRecurringMeetingTestPlugin(t *testing.T) (*Plugin, *mockPluginAPI, *mockKVStore, *kvstore.Subscription) {
 	t.Helper()
 	now := time.Now().UTC()
 	api := &mockPluginAPI{siteURL: "http://localhost:8065", captureAllPosts: true}
@@ -1207,23 +1197,21 @@ func newPendingConferenceTestPlugin(t *testing.T) (*Plugin, *mockPluginAPI, *moc
 	return p, api, kv, sub
 }
 
-// TestPollSubscription_CalendarNoMatchShortConferenceSuppressed reproduces the misfire where
-// someone briefly opens a subscribed link outside any scheduled calendar event: with no matching
-// event and a conference that ended almost immediately, nothing should be announced.
-func TestPollSubscription_CalendarNoMatchShortConferenceSuppressed(t *testing.T) {
-	start := time.Now().UTC().Add(-2 * time.Minute)
-	end := start.Add(20 * time.Second)
-	srv := &pendingConferenceTestServer{
-		record:         conferenceRecord{Name: "conferenceRecords/rec1", StartTime: &start, EndTime: &end},
-		listed:         true,
+// TestPollSubscription_RecurringMeetingUnmatchedConferenceSuppressed reproduces the misfire where
+// someone opens the link of a recurring calendar meeting outside any scheduled occurrence: only a
+// calendar occurrence may announce a conference there, so nothing is posted.
+func TestPollSubscription_RecurringMeetingUnmatchedConferenceSuppressed(t *testing.T) {
+	start := time.Now().UTC()
+	srv := &recurringMeetingTestServer{
+		records:        []conferenceRecord{{Name: "conferenceRecords/rec1", StartTime: &start}},
 		calendarStatus: http.StatusOK,
 	}
 	srv.install(t)
-	p, api, kv, sub := newPendingConferenceTestPlugin(t)
+	p, api, kv, sub := newRecurringMeetingTestPlugin(t)
 
 	p.pollSubscription(kv, sub)
 
-	assert.Empty(t, api.allPosts, "a short unscheduled conference must not be announced")
+	assert.Empty(t, api.allPosts, "a conference outside every occurrence of a recurring calendar meeting must not be announced")
 	assert.Empty(t, sub.PendingConferences)
 	assert.NotContains(t, sub.ActiveConferenceIDs, "conferenceRecords/rec1")
 	state, err := kv.GetConferencePostState("conferenceRecords/rec1")
@@ -1232,104 +1220,66 @@ func TestPollSubscription_CalendarNoMatchShortConferenceSuppressed(t *testing.T)
 	assert.True(t, state.Suppressed)
 }
 
-// TestPollSubscription_CalendarNoMatchDefersUntilMinDuration verifies that a still-running
-// unscheduled conference is held back until it has run for unscheduledConferenceMinDuration,
-// and then announced.
-func TestPollSubscription_CalendarNoMatchDefersUntilMinDuration(t *testing.T) {
-	start := time.Now().UTC().Add(-time.Minute)
-	srv := &pendingConferenceTestServer{
-		record:         conferenceRecord{Name: "conferenceRecords/rec1", StartTime: &start},
-		listed:         true,
-		calendarStatus: http.StatusOK,
+// TestPollSubscription_RecurringMeetingCalendarErrorRetried verifies that a transient calendar
+// failure on a recurring calendar meeting doesn't fall back to posting immediately: the lookup is
+// retried, and once it succeeds the calendar decides.
+func TestPollSubscription_RecurringMeetingCalendarErrorRetried(t *testing.T) {
+	cases := []struct {
+		name          string
+		matches       bool
+		wantScheduled bool
+	}{
+		{"retry matches an occurrence", true, true},
+		{"retry finds no occurrence", false, false},
 	}
-	srv.install(t)
-	p, api, kv, sub := newPendingConferenceTestPlugin(t)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			now := time.Now().UTC()
+			scheduledStart := now.Add(10 * time.Minute)
+			srv := &recurringMeetingTestServer{
+				records:        []conferenceRecord{{Name: "conferenceRecords/rec1", StartTime: &now}},
+				calendarStatus: http.StatusInternalServerError,
+			}
+			srv.install(t)
+			p, api, kv, sub := newRecurringMeetingTestPlugin(t)
 
-	p.pollSubscription(kv, sub)
+			p.pollSubscription(kv, sub)
 
-	assert.Empty(t, api.allPosts, "an unscheduled conference should not be announced before the minimum duration")
-	require.Len(t, sub.PendingConferences, 1)
-	assert.Equal(t, "conferenceRecords/rec1", sub.PendingConferences[0].ConferenceName)
-	assert.False(t, sub.PendingConferences[0].CalendarLookupPending)
-	assert.NotContains(t, sub.ActiveConferenceIDs, "conferenceRecords/rec1")
+			assert.Empty(t, api.allPosts, "a calendar lookup failure should not post immediately")
+			require.Len(t, sub.PendingConferences, 1)
+			assert.Equal(t, "conferenceRecords/rec1", sub.PendingConferences[0].ConferenceName)
 
-	// Simulate the minimum duration elapsing while the conference is still running.
-	earlier := time.Now().UTC().Add(-unscheduledConferenceMinDuration - time.Minute)
-	srv.record.StartTime = &earlier
-	srv.listed = false
-	p.pollSubscription(kv, sub)
+			p.pollSubscription(kv, sub)
+			require.Len(t, sub.PendingConferences, 1, "the lookup keeps being retried while it fails")
 
-	require.Len(t, api.allPosts, 1, "the conference should be announced once it has run long enough")
-	assert.Equal(t, postTypeConference, api.allPosts[0].Type)
-	assert.Empty(t, sub.PendingConferences)
-	assert.Contains(t, sub.ActiveConferenceIDs, "conferenceRecords/rec1")
-}
+			srv.records = nil
+			srv.calendarStatus = http.StatusOK
+			if tc.matches {
+				event := calendarEventForCode("evt1", "abc-mnop-xyz", "Weekly sync", scheduledStart, scheduledStart.Add(30*time.Minute))
+				event.RecurringEventID = "series1"
+				srv.calendarItems = []calendarEvent{event}
+			}
+			p.pollSubscription(kv, sub)
 
-// TestPollSubscription_CalendarLookupErrorRetriedThenMatched verifies that a transient calendar
-// failure no longer falls straight back to the cooldown heuristic: the lookup is retried on the
-// next poll and, once it succeeds, the calendar-anchored path takes over.
-func TestPollSubscription_CalendarLookupErrorRetriedThenMatched(t *testing.T) {
-	now := time.Now().UTC()
-	scheduledStart := now.Add(10 * time.Minute)
-	srv := &pendingConferenceTestServer{
-		record:         conferenceRecord{Name: "conferenceRecords/rec1", StartTime: &now},
-		listed:         true,
-		calendarStatus: http.StatusInternalServerError,
+			assert.Empty(t, api.allPosts)
+			assert.Empty(t, sub.PendingConferences)
+			if tc.wantScheduled {
+				require.Len(t, sub.ScheduledAnnouncements, 1, "a matched occurrence should be deferred to its scheduled start")
+				return
+			}
+			assert.Empty(t, sub.ScheduledAnnouncements)
+			state, err := kv.GetConferencePostState("conferenceRecords/rec1")
+			require.NoError(t, err)
+			require.NotNil(t, state)
+			assert.True(t, state.Suppressed)
+		})
 	}
-	srv.install(t)
-	p, api, kv, sub := newPendingConferenceTestPlugin(t)
-
-	p.pollSubscription(kv, sub)
-
-	assert.Empty(t, api.allPosts, "a calendar lookup failure should not post immediately")
-	require.Len(t, sub.PendingConferences, 1)
-	assert.True(t, sub.PendingConferences[0].CalendarLookupPending)
-	assert.Equal(t, 1, sub.PendingConferences[0].CalendarLookupAttempts)
-
-	srv.listed = false
-	srv.calendarStatus = http.StatusOK
-	srv.calendarItems = []calendarEvent{calendarEventForCode("evt1", "abc-mnop-xyz", "Weekly sync", scheduledStart, scheduledStart.Add(30*time.Minute))}
-	p.pollSubscription(kv, sub)
-
-	assert.Empty(t, api.allPosts, "the matched conference should be deferred until its scheduled start")
-	assert.Empty(t, sub.PendingConferences)
-	require.Len(t, sub.ScheduledAnnouncements, 1)
-	assert.Equal(t, "conferenceRecords/rec1", sub.ScheduledAnnouncements[0].ConferenceName)
-}
-
-// TestPollSubscription_CalendarLookupErrorRetriesExhausted verifies that after
-// maxCalendarLookupAttempts failures the conference is treated as unscheduled, posting only
-// then (it has already run past the minimum duration).
-func TestPollSubscription_CalendarLookupErrorRetriesExhausted(t *testing.T) {
-	start := time.Now().UTC().Add(-unscheduledConferenceMinDuration - time.Minute)
-	srv := &pendingConferenceTestServer{
-		record:         conferenceRecord{Name: "conferenceRecords/rec1", StartTime: &start},
-		listed:         true,
-		calendarStatus: http.StatusInternalServerError,
-	}
-	srv.install(t)
-	p, api, kv, sub := newPendingConferenceTestPlugin(t)
-
-	for attempt := 1; attempt < maxCalendarLookupAttempts; attempt++ {
-		p.pollSubscription(kv, sub)
-		srv.listed = false
-		assert.Empty(t, api.allPosts, "no post while calendar lookup retries remain (attempt %d)", attempt)
-		require.Len(t, sub.PendingConferences, 1)
-		assert.Equal(t, attempt, sub.PendingConferences[0].CalendarLookupAttempts)
-	}
-
-	p.pollSubscription(kv, sub)
-
-	require.Len(t, api.allPosts, 1, "the conference should fall back once retries are exhausted")
-	assert.Equal(t, postTypeConference, api.allPosts[0].Type)
-	assert.Empty(t, sub.PendingConferences)
-	assert.Contains(t, sub.ActiveConferenceIDs, "conferenceRecords/rec1")
 }
 
 // TestPollSubscription_NonRecurringSubscriptionKeepsImmediateFallback verifies that the
-// minimum-duration gate and calendar-error retries only apply to subscriptions known to back a
-// recurring meeting: otherwise (never matched, or last recurring match outside
-// recurringMatchWindow) conferences are announced immediately, as before.
+// calendar-only rule applies only to recurring calendar meetings: otherwise (never matched a
+// recurring occurrence, or last match outside recurringMatchWindow) unmatched conferences and
+// calendar errors still fall back to the cooldown heuristic and post immediately.
 func TestPollSubscription_NonRecurringSubscriptionKeepsImmediateFallback(t *testing.T) {
 	cases := []struct {
 		name                 string
@@ -1342,15 +1292,13 @@ func TestPollSubscription_NonRecurringSubscriptionKeepsImmediateFallback(t *test
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			start := time.Now().UTC().Add(-2 * time.Minute)
-			end := start.Add(20 * time.Second)
-			srv := &pendingConferenceTestServer{
-				record:         conferenceRecord{Name: "conferenceRecords/rec1", StartTime: &start, EndTime: &end},
-				listed:         true,
+			start := time.Now().UTC()
+			srv := &recurringMeetingTestServer{
+				records:        []conferenceRecord{{Name: "conferenceRecords/rec1", StartTime: &start}},
 				calendarStatus: tc.calendarStatus,
 			}
 			srv.install(t)
-			p, api, kv, sub := newPendingConferenceTestPlugin(t)
+			p, api, kv, sub := newRecurringMeetingTestPlugin(t)
 			sub.LastRecurringMatchAt = tc.lastRecurringMatchAt
 
 			p.pollSubscription(kv, sub)
@@ -1363,7 +1311,7 @@ func TestPollSubscription_NonRecurringSubscriptionKeepsImmediateFallback(t *test
 }
 
 // TestPollSubscription_RecurringCalendarMatchMarksSubscription verifies that matching a conference
-// to an occurrence of a recurring calendar event marks the subscription as backing a recurring
+// to an occurrence of a recurring calendar event marks the subscription as a recurring calendar
 // meeting, while a one-off event does not.
 func TestPollSubscription_RecurringCalendarMatchMarksSubscription(t *testing.T) {
 	for _, recurringID := range []string{"", "series1"} {
@@ -1372,14 +1320,13 @@ func TestPollSubscription_RecurringCalendarMatchMarksSubscription(t *testing.T) 
 			scheduledStart := now.Add(-time.Minute)
 			event := calendarEventForCode("evt1", "abc-mnop-xyz", "Weekly sync", scheduledStart, scheduledStart.Add(30*time.Minute))
 			event.RecurringEventID = recurringID
-			srv := &pendingConferenceTestServer{
-				record:         conferenceRecord{Name: "conferenceRecords/rec1", StartTime: &now},
-				listed:         true,
+			srv := &recurringMeetingTestServer{
+				records:        []conferenceRecord{{Name: "conferenceRecords/rec1", StartTime: &now}},
 				calendarStatus: http.StatusOK,
 				calendarItems:  []calendarEvent{event},
 			}
 			srv.install(t)
-			p, api, kv, sub := newPendingConferenceTestPlugin(t)
+			p, api, kv, sub := newRecurringMeetingTestPlugin(t)
 			sub.LastRecurringMatchAt = time.Time{}
 
 			p.pollSubscription(kv, sub)
@@ -1390,24 +1337,24 @@ func TestPollSubscription_RecurringCalendarMatchMarksSubscription(t *testing.T) 
 				return
 			}
 			assert.True(t, sub.LastRecurringMatchAt.Equal(scheduledStart))
-			assert.True(t, isRecurringMeetingSubscription(sub))
+			assert.True(t, isRecurringCalendarMeeting(sub))
 		})
 	}
 }
 
-func TestProcessPendingConferences_DropsExpiredRefreshFailures(t *testing.T) {
+func TestProcessPendingConferences_DropsExpiredLookupFailures(t *testing.T) {
 	withCalendarPollServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 	})
 
-	api := &mockPluginAPI{siteURL: "http://localhost:8065"}
+	api := &mockPluginAPI{siteURL: "http://localhost:8065", captureAllPosts: true}
 	kv := newMockKVStore()
 	p := pollTestPlugin(t, api, kv)
 	now := time.Now()
 	sub := &kvstore.Subscription{
 		PendingConferences: []kvstore.PendingConference{
-			{ConferenceName: "conferenceRecords/expired", FirstSeenAt: now.Add(-pendingConferenceRetention - time.Hour)},
-			{ConferenceName: "conferenceRecords/retry", FirstSeenAt: now},
+			{ConferenceName: "conferenceRecords/expired", ConferenceStart: now, FirstSeenAt: now.Add(-pendingConferenceRetention - time.Hour)},
+			{ConferenceName: "conferenceRecords/retry", ConferenceStart: now, FirstSeenAt: now},
 		},
 	}
 
@@ -1415,6 +1362,7 @@ func TestProcessPendingConferences_DropsExpiredRefreshFailures(t *testing.T) {
 	assert.True(t, changed)
 	require.Len(t, sub.PendingConferences, 1)
 	assert.Equal(t, "conferenceRecords/retry", sub.PendingConferences[0].ConferenceName)
+	assert.Empty(t, api.allPosts)
 }
 
 // TestPollSubscription_CalendarInsufficientScopesFallsBackAndNotifiesCreator verifies that a
