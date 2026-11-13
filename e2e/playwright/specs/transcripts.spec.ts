@@ -19,7 +19,7 @@ const cues = (...texts: string[]) => ['WEBVTT', '', ...texts.flatMap((text, i) =
  * Starts a meeting with /meet start, holds a finished conference in its space with a transcript of
  * `entries`, runs a poll cycle, and returns the lines of the transcript.vtt posted in the meeting's thread.
  */
-async function postTranscript(adminClient: Client4, client: Client4, channelId: string, entries: FakeTranscriptEntry[], beforePoll = async () => {}) {
+async function postTranscript(adminClient: Client4, client: Client4, channelId: string, entries: FakeTranscriptEntry[], beforePoll: () => Promise<unknown> = async () => {}) {
     await executeCommand(client, channelId, '/meet start Planning');
     const [space] = await fakeGoogle.spaces();
     const [meetingPost] = await recentPosts(client, channelId);
