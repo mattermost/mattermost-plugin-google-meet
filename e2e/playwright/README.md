@@ -56,7 +56,8 @@ Set them in the shell for both `npm run server:up` and `npm test`.
   `e2e_crypto_vector_test.go` both read.
 - The plugin polls Google instead of receiving webhooks. Its poll interval is set to a day, so the
   poller never runs on its own during a test; tests that need a cycle call `runPollCycle()`
-  (`lib/meet_api.ts`), which triggers `POST /admin/poll-now` and waits until the fake has gone quiet.
+  (`lib/meet_api.ts`), which triggers `POST /admin/poll-now` and waits until the cycle releases its
+  cluster mutex (a row in the plugin's KV store), after its last post.
   Conferences, artifacts and Calendar events come from `fakeGoogle.startConference()`,
   `addArtifact()` and `addEvent()`, with times relative to now, so tests backdate instead of waiting.
 - Before every test, `lib/test.ts` resets the fake and clears the plugin's KV store, so no test

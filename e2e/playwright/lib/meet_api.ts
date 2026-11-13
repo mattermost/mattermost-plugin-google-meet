@@ -6,7 +6,8 @@
 import {Client4} from '@mattermost/client';
 import type {Post} from '@mattermost/types/posts';
 
-import {fakeGoogle, waitUntilQuiet} from './fake_google';
+import {fakeGoogle} from './fake_google';
+import {kvGet} from './kv';
 import {PLUGIN_ID} from './meet_plugin';
 
 export const pluginApiPath = `/plugins/${PLUGIN_ID}/api/v1`;
@@ -104,9 +105,16 @@ export async function createPrivateChannel(adminClient: Client4, teamId: string,
 }
 
 /**
+ * The KV row of the cluster mutex every poll cycle holds (server/poll.go runPollCycle). pluginapi's
+ * cluster.Mutex stores it as `mutex_<name>` and deletes it on Unlock, after the cycle's last post.
+ */
+const POLL_MUTEX_KEY = 'mutex_com.mattermost.google-meet.poll';
+
+/**
  * Runs one poll cycle and waits for it to finish. POST /admin/poll-now starts the cycle on a
- * goroutine (server/api.go), so this waits for the cycle's first Google call and then until the
- * fake has been quiet for a second. Needs something to poll: a subscription or an ad-hoc meeting.
+ * goroutine (server/api.go) and returns, so this waits for the cycle's first Google call, which comes
+ * after it took the poll mutex, and then for the mutex's KV row to go, which happens only after every
+ * post and post update of the cycle. Needs something to poll: a subscription or an ad-hoc meeting.
  */
 export async function runPollCycle(adminClient: Client4) {
     const before = (await fakeGoogle.requests()).length;
@@ -114,12 +122,16 @@ export async function runPollCycle(adminClient: Client4) {
     if (status !== 200 || json?.status !== 'poll triggered') {
         throw new Error(`poll-now did not start a cycle: ${status} ${JSON.stringify(json)}`);
     }
-    const deadline = Date.now() + 10_000;
-    while ((await fakeGoogle.requests()).length === before) {
+    await waitFor(async () => (await fakeGoogle.requests()).length > before, 10_000, 'The poll cycle made no Google call within 10s. Is there a subscription or an ad-hoc meeting to poll?');
+    await waitFor(async () => (await kvGet(POLL_MUTEX_KEY)) === null, 30_000, 'The poll cycle still held its mutex after 30s.');
+}
+
+async function waitFor(done: () => Promise<boolean>, timeoutMs: number, message: string) {
+    const deadline = Date.now() + timeoutMs;
+    while (!(await done())) {
         if (Date.now() > deadline) {
-            throw new Error('The poll cycle made no Google call within 10s. Is there a subscription or an ad-hoc meeting to poll?');
+            throw new Error(message);
         }
         await new Promise((resolve) => setTimeout(resolve, 100));
     }
-    await waitUntilQuiet();
 }
