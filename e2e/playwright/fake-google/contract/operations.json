@@ -32,7 +32,7 @@
     "methods": ["calendar.events.list"],
     "fields": {
       "ConferenceData": ["conferenceId"],
-      "Event": ["conferenceData", "end", "id", "kind", "start", "status", "summary"],
+      "Event": ["conferenceData", "end", "id", "kind", "recurringEventId", "start", "status", "summary"],
       "EventDateTime": ["date", "dateTime", "timeZone"],
       "Events": ["items", "kind", "nextPageToken", "summary", "timeZone"]
     }

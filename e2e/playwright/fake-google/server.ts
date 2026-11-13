@@ -70,7 +70,7 @@ type Space = {name: string; meetingCode: string; meetingUri: string; owner: stri
 type ConferenceRecord = {name: string; space: string; startTime: string; endTime?: string};
 type Artifact = {name: string; state: string; startTime: string; endTime?: string; exportUri?: string; resource: string};
 type TranscriptEntry = {name: string; participant: string; text: string; languageCode: string; startTime: string; endTime: string};
-type CalendarEvent = {id: string; status: string; summary: string; start: Json; end: Json; conferenceId?: string};
+type CalendarEvent = {id: string; status: string; summary: string; start: Json; end: Json; conferenceId?: string; recurringEventId?: string};
 type Failure = {methodId: string; status: number; reason?: string};
 type LoggedRequest = {method: string; host: string; path: string; query: string; status: number; user?: string; methodId?: string};
 
@@ -565,6 +565,7 @@ function listEvents(match: MethodMatch, user: User, calendarId: string, query: U
                 summary: e.summary,
                 start: e.start,
                 end: e.end,
+                ...(e.recurringEventId ? {recurringEventId: e.recurringEventId} : {}),
                 ...(e.conferenceId ? {conferenceData: {conferenceId: e.conferenceId}} : {}),
             })),
         },
@@ -692,7 +693,10 @@ function control(method: string, segments: string[], body: Json): Result {
         return {status: 200, body: artifact};
     }
     if (section === 'events' && method === 'POST') {
-        // A primary-calendar event: {user, summary, startOffsetSeconds, endOffsetSeconds, conferenceId?, status?, allDay?}.
+        // A primary-calendar event: {user, summary, startOffsetSeconds, endOffsetSeconds, conferenceId?, status?, allDay?, recurringEventId?}.
+        // With singleEvents=true (what the plugin asks for) Google returns each occurrence of a
+        // recurring event as its own event carrying the series' recurringEventId, so tests create
+        // one event per occurrence with the same recurringEventId.
         const user = userByKey(body.user ?? 'owner');
         if (!user) {
             return {status: 400, body: {error: `unknown user ${body.user}`}};
@@ -707,6 +711,7 @@ function control(method: string, segments: string[], body: Json): Result {
             start: body.allDay ? {date: day(start)} : {dateTime: start.toISOString(), timeZone: 'UTC'},
             end: body.allDay ? {date: day(end)} : {dateTime: end.toISOString(), timeZone: 'UTC'},
             ...(body.conferenceId ? {conferenceId: body.conferenceId} : {}),
+            ...(body.recurringEventId ? {recurringEventId: body.recurringEventId} : {}),
         };
         state.events.set(user.key, [...(state.events.get(user.key) ?? []), event]);
         return {status: 200, body: event};

@@ -157,6 +157,8 @@ type mockKVStore struct {
 	// storeConfStateErr, when set, makes StoreConferencePostState fail. Used to
 	// simulate a post-state persistence failure independent of other KV operations.
 	storeConfStateErr error
+	// getConfStateErr, when set, is consulted on every GetConferencePostState call.
+	getConfStateErr func(name string) error
 }
 
 func newMockKVStore() *mockKVStore {
@@ -283,6 +285,11 @@ func (m *mockKVStore) StoreConferencePostState(name string, state *kvstore.Confe
 }
 
 func (m *mockKVStore) GetConferencePostState(name string) (*kvstore.ConferencePostState, error) {
+	if m.getConfStateErr != nil {
+		if err := m.getConfStateErr(name); err != nil {
+			return nil, err
+		}
+	}
 	return m.conferencePosts[name], nil
 }
 

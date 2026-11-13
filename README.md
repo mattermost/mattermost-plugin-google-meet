@@ -186,6 +186,7 @@ When enabled, a new conference on a subscribed space is matched against the crea
 - If a match is found and its scheduled start is still in the future, the "conference started" post is deferred until that scheduled start instead of posting immediately — this is what fixes early-join drift.
 - If a second conference record matches the same calendar event occurrence (for example everyone drops and rejoins), it is bound to the already-announced post instead of creating a duplicate, and its artifacts still thread correctly. This also fixes a side effect of the cooldown-only heuristic, where a suppressed rejoin's recordings and transcripts were previously never tracked.
 - If no matching calendar event is found, the conference falls back to the `ConferenceStartCooldownHours` heuristic described above.
+- Exception for recurring meetings: once a subscription has matched an occurrence of a recurring calendar event (within the last 35 days), only a calendar occurrence can announce a conference on it. A conference that doesn't match any occurrence (for example someone opening the link outside the scheduled meeting) is never announced, and a failed calendar lookup is retried on every poll (for up to 24 hours) instead of falling back to the cooldown heuristic. This doesn't apply while the creator's token is missing the calendar scope.
 - The meeting post's title is taken from the calendar event's summary when a match is found.
 
 Enabling this setting changes the requested OAuth scope; users must run `/meet connect` again to grant `calendar.events.readonly`. Until they do, the plugin DMs the subscription creator once (repeating at most once per day) to explain that conferences on their subscriptions are using the cooldown fallback instead of the scheduled time. Default: disabled.
@@ -313,6 +314,8 @@ Check each of the following in order:
 - Confirm the subscription creator reconnected (`/meet connect`) after `Sync Conference Posts to Calendar Schedule` was turned on — otherwise their token is missing `calendar.events.readonly` and the plugin DMs them about it, then falls back to the cooldown heuristic.
 - The creator must be the organizer of, or an attendee on, the calendar event; the plugin only reads the creator's own primary calendar.
 - The calendar event's Meet conference must match the subscription's meeting code exactly, and the event must not be all-day or cancelled.
+- On a recurring calendar meeting, a conference is only announced if it starts within 30 minutes of a scheduled occurrence. Conferences outside that window are suppressed, and the logs show `no matching occurrence of the recurring calendar meeting`.
+- If the logs show `Calendar schedule lookup failed; will retry next poll`, the post on a recurring calendar meeting is delayed until a calendar lookup succeeds.
 
 ### Subscription was added but seems to apply to the wrong channel
 

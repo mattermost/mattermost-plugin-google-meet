@@ -70,6 +70,36 @@ func TestFindScheduledInstance_MatchesConferenceID(t *testing.T) {
 	assert.True(t, instance.End.Equal(end))
 }
 
+// TestFindScheduledInstance_FlagsRecurringOccurrence verifies that an occurrence of a recurring
+// event (Google sets recurringEventId on each one when singleEvents=true) is flagged as recurring,
+// and a one-off event is not, straight from the Calendar API's JSON.
+func TestFindScheduledInstance_FlagsRecurringOccurrence(t *testing.T) {
+	cases := []struct {
+		name      string
+		eventJSON string
+		recurring bool
+	}{
+		{"occurrence of a recurring event", `"recurringEventId":"series1",`, true},
+		{"one-off event", ``, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			withCalendarServer(t, func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(`{"items":[{"id":"series1_20260803T090000Z",` + tc.eventJSON + `"status":"confirmed","summary":"PDE Meeting",` +
+					`"start":{"dateTime":"2026-08-03T09:00:00Z"},"end":{"dateTime":"2026-08-03T10:00:00Z"},` +
+					`"conferenceData":{"conferenceId":"abc-mnop-xyz"}}]}`))
+			})
+
+			p := &Plugin{}
+			instance, err := p.findScheduledInstance(newTestToken(), "abc-mnop-xyz", time.Date(2026, 8, 3, 9, 2, 0, 0, time.UTC))
+			require.NoError(t, err)
+			require.NotNil(t, instance)
+			assert.Equal(t, tc.recurring, instance.Recurring)
+		})
+	}
+}
+
 func TestFindScheduledInstance_NoMatchingConferenceID(t *testing.T) {
 	start := time.Date(2026, 8, 3, 9, 0, 0, 0, time.UTC)
 	event := timedEvent("evt1", "different-code", start, start.Add(30*time.Minute))
