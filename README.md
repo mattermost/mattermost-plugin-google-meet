@@ -186,6 +186,7 @@ When enabled, a new conference on a subscribed space is matched against the crea
 - If a match is found and its scheduled start is still in the future, the "conference started" post is deferred until that scheduled start instead of posting immediately — this is what fixes early-join drift.
 - If a second conference record matches the same calendar event occurrence (for example everyone drops and rejoins), it is bound to the already-announced post instead of creating a duplicate, and its artifacts still thread correctly. This also fixes a side effect of the cooldown-only heuristic, where a suppressed rejoin's recordings and transcripts were previously never tracked.
 - If no matching calendar event is found, the conference falls back to the `ConferenceStartCooldownHours` heuristic described above.
+- Exception for recurring meetings: once a subscription has matched an occurrence of a recurring calendar event (within the last 35 days), the calendar is expected to explain every real meeting on that link. A conference with no matching event is then held back until it has run for 5 minutes before going through the cooldown heuristic, and is not announced at all if it ends sooner (typically someone briefly opening the link outside the scheduled meeting). A failed calendar lookup (for example a transient Google API error) is also retried on the next poll cycles, up to 3 attempts, instead of falling back immediately.
 - The meeting post's title is taken from the calendar event's summary when a match is found.
 
 Enabling this setting changes the requested OAuth scope; users must run `/meet connect` again to grant `calendar.events.readonly`. Until they do, the plugin DMs the subscription creator once (repeating at most once per day) to explain that conferences on their subscriptions are using the cooldown fallback instead of the scheduled time. Default: disabled.
@@ -306,13 +307,15 @@ Check each of the following in order:
 - The meeting actually used the subscribed Meet space — ad-hoc meetings post under the originating `/meet start` thread, not under a channel subscription.
 - For recordings/transcripts/smart notes specifically, the Google Meet space settings need to have the corresponding feature enabled. The plugin only relays what Google produces; it cannot retroactively enable recording on a meeting that did not opt in to it.
 - Wait at least one poll interval (default 60s) after a meeting starts/ends. Artifacts in particular can take several minutes after a meeting before Google finishes processing them.
-- If `EnableCalendarScheduleSync` is enabled and the meeting has a calendar event, the post is deferred until the event's scheduled start — it will not appear immediately even though the conference is active.
+- If `EnableCalendarScheduleSync` is enabled and the meeting has a calendar event, the post is deferred until the event's scheduled start — it will not appear immediately even though the conference is active. On a subscription backing a recurring calendar meeting, a conference with no matching calendar event only appears once it has run for 5 minutes, and conferences shorter than that are never announced.
 
 ### "Conference started" post appears late or not at all with calendar sync enabled
 
 - Confirm the subscription creator reconnected (`/meet connect`) after `Sync Conference Posts to Calendar Schedule` was turned on — otherwise their token is missing `calendar.events.readonly` and the plugin DMs them about it, then falls back to the cooldown heuristic.
 - The creator must be the organizer of, or an attendee on, the calendar event; the plugin only reads the creator's own primary calendar.
 - The calendar event's Meet conference must match the subscription's meeting code exactly, and the event must not be all-day or cancelled.
+- The conference must start within 30 minutes of the event's scheduled start. Conferences outside that window are treated as unscheduled; on a recurring-meeting subscription they are held until they have run for 5 minutes, and dropped if they end sooner.
+- On a recurring-meeting subscription, if the server logs show `Calendar schedule lookup failed; will retry next poll`, the post is delayed by up to 3 poll cycles while the lookup is retried.
 
 ### Subscription was added but seems to apply to the wrong channel
 
