@@ -1,0 +1,188 @@
+{
+  "api": "calendar",
+  "version": "v3",
+  "methods": {
+    "calendar.events.list": {
+      "httpMethod": "GET",
+      "path": "/calendar/v3/calendars/{calendarId}/events",
+      "parameters": {
+        "timeMax": {
+          "type": "string",
+          "location": "query",
+          "format": "date-time"
+        },
+        "alwaysIncludeEmail": {
+          "type": "boolean",
+          "location": "query"
+        },
+        "iCalUID": {
+          "type": "string",
+          "location": "query"
+        },
+        "syncToken": {
+          "type": "string",
+          "location": "query"
+        },
+        "orderBy": {
+          "type": "string",
+          "location": "query",
+          "enum": [
+            "startTime",
+            "updated"
+          ]
+        },
+        "eventTypes": {
+          "type": "string",
+          "location": "query",
+          "enum": [
+            "birthday",
+            "default",
+            "focusTime",
+            "fromGmail",
+            "outOfOffice",
+            "workingLocation"
+          ],
+          "repeated": true
+        },
+        "maxResults": {
+          "type": "integer",
+          "location": "query",
+          "format": "int32"
+        },
+        "q": {
+          "type": "string",
+          "location": "query"
+        },
+        "calendarId": {
+          "type": "string",
+          "location": "path",
+          "required": true
+        },
+        "showDeleted": {
+          "type": "boolean",
+          "location": "query"
+        },
+        "updatedMin": {
+          "type": "string",
+          "location": "query",
+          "format": "date-time"
+        },
+        "sharedExtendedProperty": {
+          "type": "string",
+          "location": "query",
+          "repeated": true
+        },
+        "maxAttendees": {
+          "type": "integer",
+          "location": "query",
+          "format": "int32"
+        },
+        "privateExtendedProperty": {
+          "type": "string",
+          "location": "query",
+          "repeated": true
+        },
+        "timeZone": {
+          "type": "string",
+          "location": "query"
+        },
+        "showHiddenInvitations": {
+          "type": "boolean",
+          "location": "query"
+        },
+        "timeMin": {
+          "type": "string",
+          "location": "query",
+          "format": "date-time"
+        },
+        "singleEvents": {
+          "type": "boolean",
+          "location": "query"
+        },
+        "pageToken": {
+          "type": "string",
+          "location": "query"
+        }
+      },
+      "response": "Events"
+    }
+  },
+  "schemas": {
+    "ConferenceData": {
+      "type": "object",
+      "properties": {
+        "conferenceId": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Event": {
+      "type": "object",
+      "properties": {
+        "conferenceData": {
+          "$ref": "ConferenceData"
+        },
+        "end": {
+          "$ref": "EventDateTime"
+        },
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "start": {
+          "$ref": "EventDateTime"
+        },
+        "status": {
+          "type": "string"
+        },
+        "summary": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "EventDateTime": {
+      "type": "object",
+      "properties": {
+        "date": {
+          "type": "string"
+        },
+        "dateTime": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "timeZone": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Events": {
+      "type": "object",
+      "properties": {
+        "items": {
+          "type": "array",
+          "items": {
+            "$ref": "Event"
+          }
+        },
+        "kind": {
+          "type": "string"
+        },
+        "nextPageToken": {
+          "type": "string"
+        },
+        "summary": {
+          "type": "string"
+        },
+        "timeZone": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}
