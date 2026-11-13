@@ -35,6 +35,20 @@ export type FakeRequest = {method: string; host: string; path: string; query: st
 
 export type FakeSpace = {name: string; meetingCode: string; meetingUri: string; owner: FakeGoogleUserKey};
 
+export type FakeConference = {name: string; space: string; startTime: string; endTime?: string};
+
+export type FakeArtifactKind = 'recording' | 'transcript' | 'smartNote';
+
+/** A recording, transcript or smart note. `exportUri` is the Drive or Docs link Google returns. */
+export type FakeArtifact = {name: string; state: 'STARTED' | 'ENDED' | 'FILE_GENERATED'; startTime: string; endTime?: string; resource: string; exportUri: string};
+
+/**
+ * A transcript entry. `speaker` is the participant ID (default p1); the fake creates that
+ * participant the first time it speaks, as a `speakerKind` (default signedinUser) named
+ * `speakerName` (default "Participant <id>").
+ */
+export type FakeTranscriptEntry = {text: string; speaker?: string; speakerName?: string; speakerKind?: 'signedinUser' | 'anonymousUser' | 'phoneUser'};
+
 export const fakeGoogle = {
     /** Clears everything. `keepViolations` keeps the violation lists (the per-test reset in lib/test.ts). */
     reset: (keepViolations = false) => control('POST', 'reset', {keepViolations}),
@@ -50,6 +64,28 @@ export const fakeGoogle = {
     failNext: (methodId: string, status: number, reason?: string) => control('POST', 'fail', {methodId, status, reason}),
 
     spaces: async () => (await control<{value: FakeSpace[]}>('GET', 'spaces')).value,
+
+    /**
+     * A conference in `space` (a space name or meeting code). Offsets are seconds from now, so a test
+     * backdates a conference instead of waiting; leave `endOffsetSeconds` out for one still running.
+     */
+    startConference: (space: string, times: {startOffsetSeconds?: number; endOffsetSeconds?: number} = {}) =>
+        control<FakeConference>('POST', 'conferences', {space, ...times}),
+    /** Ends a conference, `endOffsetSeconds` from now (default: now). */
+    endConference: (conference: FakeConference, endOffsetSeconds = 0) =>
+        control<FakeConference>('PATCH', `conferences/${conference.name.split('/')[1]}`, {endOffsetSeconds}),
+
+    /**
+     * Adds an artifact to a conference, by default already generated (FILE_GENERATED). Passing the
+     * `name` of an existing one changes its state instead. Transcript entries are five seconds apart
+     * from the conference start.
+     */
+    addArtifact: (
+        conference: FakeConference,
+        kind: FakeArtifactKind,
+        options: {state?: FakeArtifact['state']; name?: string; entries?: FakeTranscriptEntry[]} = {},
+    ) => control<FakeArtifact>('POST', 'artifacts', {conference: conference.name, kind, ...options}),
+
     requests: async () => (await control<{value: FakeRequest[]}>('GET', 'requests')).value,
 
     /** Everything recorded so far, including `late`: violations deferred past the test that caused them. */
@@ -59,3 +95,21 @@ export const fakeGoogle = {
     /** Moves the current violations to `late`, labelled with the last checked test, which global teardown fails the run on. */
     deferViolations: () => control<{value: string[]}>('POST', 'violations/defer'),
 };
+
+/**
+ * Resolves once the fake has seen no new request for `quietMs`. Throws if requests keep coming for
+ * `timeoutMs`, so a caller never acts on a request log that is still growing.
+ */
+export async function waitUntilQuiet(quietMs = 1_000, timeoutMs = 15_000) {
+    const deadline = Date.now() + timeoutMs;
+    let seen = (await fakeGoogle.requests()).length;
+    while (Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, quietMs));
+        const now = (await fakeGoogle.requests()).length;
+        if (now === seen) {
+            return;
+        }
+        seen = now;
+    }
+    throw new Error(`Fake Google was still receiving requests after ${timeoutMs / 1000}s.`);
+}

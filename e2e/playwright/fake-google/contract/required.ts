@@ -28,6 +28,9 @@ export const REQUIRED_RESPONSE_FIELDS: Record<string, Rule[]> = {
         why: 'poller (poll.go)',
     }],
     'meet.conferenceRecords.get': [{when: always, paths: ['name', 'startTime', 'space'], why: 'poller (poll.go)'}],
+    // The display name is on whichever of signedinUser, anonymousUser or phoneUser is set, which a
+    // path list cannot express; smoke.test.ts checks the fake sets exactly one.
+    'meet.conferenceRecords.participants.get': [{when: always, paths: ['name'], why: 'transcript.vtt speaker names (artifact_post.go)'}],
     'meet.conferenceRecords.recordings.list': [{when: always, paths: ['recordings[].name', 'recordings[].state'], why: 'artifact posts (artifact_post.go)'}],
     'meet.conferenceRecords.transcripts.list': [{when: always, paths: ['transcripts[].name', 'transcripts[].state'], why: 'artifact posts (artifact_post.go)'}],
     'meet.conferenceRecords.smartNotes.list': [{when: always, paths: ['smartNotes[].name', 'smartNotes[].state'], why: 'artifact posts (artifact_post.go)'}],
