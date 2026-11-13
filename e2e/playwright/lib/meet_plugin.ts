@@ -137,6 +137,7 @@ export async function ensureMeetPlugin(adminClient: Client4, overrides: Partial<
         },
     } as any);
     await waitForPluginRunning(adminClient);
+    await waitForSettingsApplied(adminClient);
 }
 
 // What the current test set with ensureMeetPlugin. Reading the config back would not work: the
@@ -148,6 +149,43 @@ export async function updateMeetPluginSettings(adminClient: Client4, changes: Pa
     applied = {...applied, ...changes};
     await adminClient.patchConfig({PluginSettings: {Plugins: {[PLUGIN_ID]: pluginConfig(applied)}}} as any);
     await waitForPluginRunning(adminClient);
+    await waitForSettingsApplied(adminClient);
+}
+
+// Settings the server masks when it returns the config (plugin.json settings_schema `secret`).
+const SECRET_SETTINGS = new Set(manifest.settings_schema.settings.filter((s) => (s as {secret?: boolean}).secret).map((s) => s.key.toLowerCase()));
+const MASKED = '********************************';
+
+/**
+ * Confirms that the settings in `applied` took effect: the server stored them (secrets come back
+ * masked), and the plugin itself reports the configured state they imply (GET /config/status).
+ * The plugin's OnConfigurationChange hook runs while the server saves the config, so a plugin that
+ * failed to load them would still be RUNNING with its old settings.
+ */
+async function waitForSettingsApplied(adminClient: Client4) {
+    const expected = pluginConfig(applied);
+    await expect
+        .poll(
+            async () => {
+                const stored = ((await adminClient.getConfig()).PluginSettings.Plugins[PLUGIN_ID] ?? {}) as Record<string, unknown>;
+                return Object.keys(expected).filter((key) => stored[key] !== expected[key] && !(SECRET_SETTINGS.has(key) && stored[key] === MASKED));
+            },
+            {message: 'plugin settings stored by the server should match what the test set (mismatched keys)', timeout: 10_000},
+        )
+        .toEqual([]);
+
+    const configured = Boolean(applied.googleClientId && applied.googleClientSecret && applied.encryptionKey);
+    await expect
+        .poll(
+            async () => {
+                const response = await fetch(`${adminClient.getUrl()}/plugins/${PLUGIN_ID}/api/v1/config/status`, {
+                    headers: {Authorization: `Bearer ${adminClient.getToken()}`, 'X-Requested-With': 'XMLHttpRequest'},
+                });
+                return response.ok ? ((await response.json()) as {configured: boolean}).configured : `HTTP ${response.status}`;
+            },
+            {message: `the plugin should report configured=${configured}`, timeout: 10_000},
+        )
+        .toBe(configured);
 }
 
 // The server stores plugin setting keys in lower case.

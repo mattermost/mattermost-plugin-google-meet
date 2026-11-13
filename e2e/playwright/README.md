@@ -20,7 +20,7 @@ The stack's default ports differ from the other plugins' e2e stacks, so they can
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `MM_IMAGE` | `mattermost/mattermost-enterprise-edition:12.0` | Server image (amd64 only; on Apple silicon use Docker Desktop's Rosetta emulation) |
+| `MM_IMAGE` | `mattermost/mattermost-enterprise-edition:12.0.2` | Server image (amd64 only; on Apple silicon use Docker Desktop's Rosetta emulation) |
 | `MM_PORT` | `8085` | Mattermost port, on the host and in the container; also the SiteURL port |
 | `FAKE_GOOGLE_PORT` | `8100` | Fake Google's control API and browser pages, on the host |
 | `E2E_FAKE_HTTPS_PORT` | `8463` | Fake Google's HTTPS, on the host (443 in the Cursor agent environment, where the browser maps `accounts.google.com` to it) |
@@ -47,16 +47,18 @@ Set them in the shell for both `npm run server:up` and `npm test`.
   only with `prompt=consent`), revokes every token of a grant together, and rejects page tokens that
   are malformed or replayed with a different query.
 - Tests drive it through `lib/fake_google.ts`: `issueToken()`, `revokeToken()`, `failNext(method,
-  status)` for error paths, and `requests()` (a log of every call the plugin made). The control API
-  also creates conferences, recordings, transcripts, smart notes and Calendar events, with times
-  relative to now so tests can backdate instead of waiting.
+  status)` for error paths, `createSpace()`, `startConference()`, `addArtifact()`, `addEvent()`, and
+  `requests()` (a log of every call the plugin made).
 - Most tests connect users with `connectUser()` (`lib/kv.ts`), which stores a fake token in the
   plugin's KV store exactly as the OAuth callback would. Only `connect_account.spec.ts` goes through
   the sign-in and consent pages. The token storage format is pinned on both sides by one test vector,
   `server/store/kvstore/testdata/e2e_crypto_vector.json`, which `npm run verify:crypto` and the Go test
   `e2e_crypto_vector_test.go` both read.
 - The plugin polls Google instead of receiving webhooks. Its poll interval is set to a day, so the
-  poller never runs on its own during a test; tests that need a cycle call `POST /admin/poll-now`.
+  poller never runs on its own during a test; tests that need a cycle call `runPollCycle()`
+  (`lib/meet_api.ts`), which triggers `POST /admin/poll-now` and waits until the fake has gone quiet.
+  Conferences, artifacts and Calendar events come from `fakeGoogle.startConference()`,
+  `addArtifact()` and `addEvent()`, with times relative to now, so tests backdate instead of waiting.
 - Before every test, `lib/test.ts` resets the fake and clears the plugin's KV store, so no test
   depends on what an earlier one left behind. Because of that, the suite refuses to run unless
   Mattermost, Postgres and the fake are on localhost (`lib/safety.ts`); set
@@ -86,6 +88,16 @@ Set them in the shell for both `npm run server:up` and `npm test`.
   here, responses with conference data cannot come from real Google without a live meeting, so they
   are checked only against the published spec. Connecting an account and creating a space could get
   an opt-in real lane later.
+
+## Screenshot baselines
+
+`specs/visual.spec.ts` (tagged `@visual`, skipped by `npm test`) compares the meeting post, the
+conference post, the ended meeting's summary and the artifact thread with PNGs in
+`specs/visual.spec.ts-snapshots/`. `npm run test:visual` runs them on a separate compose project
+(`script/visual.sh`: Mattermost 12.0.2 on :8078, other ports for the rest) with a Playwright browser in
+Docker, so the screenshots match on any machine; the normal stack can keep running. After an
+intended UI change, run `npm run test:visual-update-snapshots` and review the new PNGs. In CI this is
+the non-blocking `visual` job. Copied from the Google Calendar suite.
 
 ## Writing tests
 

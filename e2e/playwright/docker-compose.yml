@@ -52,7 +52,7 @@ services:
       retries: 20
 
   postgres:
-    image: postgres:16-alpine
+    image: postgres:16.14-alpine
     environment:
       POSTGRES_USER: mmuser
       POSTGRES_PASSWORD: mostest
@@ -70,7 +70,7 @@ services:
   mattermost:
     # Must satisfy plugin.json's min_server_version. Only amd64 images are published; on Apple
     # silicon use Docker Desktop's Rosetta emulation (QEMU crashes the server at random).
-    image: ${MM_IMAGE:-mattermost/mattermost-enterprise-edition:12.0}
+    image: ${MM_IMAGE:-mattermost/mattermost-enterprise-edition:12.0.2}
     platform: linux/amd64
     depends_on:
       postgres:
