@@ -54,8 +54,8 @@ test.describe('conference posts for subscribed spaces', {tag: '@contract-fake'},
         await expect(posts.meetingTitle(posts.conferencePost)).toHaveText('Team standup');
         await expect(posts.joinButton(posts.conferencePost)).toHaveAttribute('href', space.meetingUri);
 
-        // # End the conference and run a poll cycle
-        await fakeGoogle.endConference(conference);
+        // # End the conference two seconds after the post was created (a fixed meeting length) and run a poll cycle
+        await fakeGoogle.endConferenceAt(conference, post.create_at + 2000);
         await runPollCycle(adminClient);
 
         // * Verify the same post now says the meeting ended, with a summary attachment and no join link

@@ -71,6 +71,19 @@ export const fakeGoogle = {
     /** Ends a conference, `endOffsetSeconds` from now (default: now). */
     endConference: (conference: FakeConference, endOffsetSeconds = 0) =>
         control<FakeConference>('PATCH', `conferences/${conference.name.split('/')[1]}`, {endOffsetSeconds}),
+    /**
+     * Ends a conference at a fixed time (epoch ms), waiting until that time has passed, since the
+     * plugin only treats a conference as ended once its end time is in the past. A summary's meeting
+     * length runs from the meeting post's create_at to this end, so ending at create_at plus a few
+     * seconds gives the same length however long the test took.
+     */
+    endConferenceAt: async (conference: FakeConference, at: number) => {
+        const wait = at - Date.now();
+        if (wait > 0) {
+            await new Promise((resolve) => setTimeout(resolve, wait + 100));
+        }
+        return fakeGoogle.endConference(conference, (at - Date.now()) / 1000);
+    },
 
     /**
      * Adds an artifact to a conference, by default already generated (FILE_GENERATED). Passing the

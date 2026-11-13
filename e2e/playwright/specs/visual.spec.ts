@@ -76,11 +76,12 @@ test.describe('visual', {tag: '@visual'}, () => {
         // * Verify the conference post matches the baseline
         await expect(posts.conferencePost).toHaveScreenshot('conference-post.png', {mask: [posts.meetingUrlLink(posts.conferencePost)]});
 
-        // # Add a recording, a transcript and smart notes, end the conference and run a poll cycle
+        // # Add a recording, a transcript and smart notes, end the conference two seconds after the post was created (a fixed meeting length) and run a poll cycle
+        const [meetingPost] = await postsOfType(userClient, channel.id, 'custom_gmeet_conference');
         await fakeGoogle.addArtifact(conference, 'recording');
         await fakeGoogle.addArtifact(conference, 'transcript', {entries: [{text: 'Welcome, everyone.'}, {text: 'First item: the roadmap.'}]});
         await fakeGoogle.addArtifact(conference, 'smartNote');
-        await fakeGoogle.endConference(conference);
+        await fakeGoogle.endConferenceAt(conference, meetingPost.create_at + 2000);
         await runPollCycle(adminClient);
         await expect(posts.summaryLink('Smart notes link')).toBeVisible();
         await settle(pw, posts.endedMeetingPost);
@@ -89,7 +90,6 @@ test.describe('visual', {tag: '@visual'}, () => {
         await expect(posts.endedMeetingPost).toHaveScreenshot('meeting-ended-summary.png', {mask: [posts.summaryDate()]});
 
         // # Open the meeting's thread
-        const [meetingPost] = await postsOfType(userClient, channel.id, 'custom_gmeet_conference');
         await (await channelsPage.centerView.getPostById(meetingPost.id)).openAThread();
         const rhs = channelsPage.sidebarRight;
         await rhs.toBeVisible();
