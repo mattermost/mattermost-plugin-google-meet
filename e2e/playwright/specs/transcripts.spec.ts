@@ -23,7 +23,7 @@ async function postTranscript(adminClient: Client4, client: Client4, channelId: 
     await executeCommand(client, channelId, '/meet start Planning');
     const [space] = await fakeGoogle.spaces();
     const [meetingPost] = await recentPosts(client, channelId);
-    const conference = await fakeGoogle.startConference(space.name, {startOffsetSeconds: -600});
+    const conference = await fakeGoogle.startConference(space.name);
     await fakeGoogle.addArtifact(conference, 'transcript', {entries});
     await fakeGoogle.endConference(conference);
     await beforePoll();
