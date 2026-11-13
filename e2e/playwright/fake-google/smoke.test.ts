@@ -214,13 +214,16 @@ test('answers the calendar events query the plugin sends within the contract', a
     const {access_token: token} = await connect([SCOPES.created, SCOPES.readonly, SCOPES.calendar]);
     await control('POST', 'events', {summary: 'Standup', startOffsetSeconds: 300, endOffsetSeconds: 1800, conferenceId: 'abc-defg-hij'});
     await control('POST', 'events', {summary: 'Holiday', allDay: true, startOffsetSeconds: 0, endOffsetSeconds: 86_400});
+    await control('POST', 'events', {summary: 'Daily', startOffsetSeconds: -600, endOffsetSeconds: 1200, conferenceId: 'abc-defg-hij', recurringEventId: 'dailyseries'});
 
     // server/calendar.go listCalendarEvents
     const query = {timeMin: new Date(Date.now() - 3_600_000).toISOString(), timeMax: new Date(Date.now() + 3_600_000).toISOString(), singleEvents: 'true', orderBy: 'startTime'};
     const events = await google(token, 'GET', '/calendar/v3/calendars/primary/events', query);
     assert.equal(events.status, 200);
-    assert.deepEqual(events.body.items.map((e: Json) => e.summary).sort(), ['Holiday', 'Standup']);
+    assert.deepEqual(events.body.items.map((e: Json) => e.summary).sort(), ['Daily', 'Holiday', 'Standup']);
     assert.equal(events.body.items.find((e: Json) => e.summary === 'Standup').conferenceData.conferenceId, 'abc-defg-hij');
+    assert.equal(events.body.items.find((e: Json) => e.summary === 'Standup').recurringEventId, undefined);
+    assert.equal(events.body.items.find((e: Json) => e.summary === 'Daily').recurringEventId, 'dailyseries');
     assert.deepEqual(await violations(), []);
 });
 

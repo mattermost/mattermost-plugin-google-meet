@@ -76,6 +76,50 @@ export async function isConnected(mmUserId: string): Promise<boolean> {
     return (await kvGet(tokenKey(mmUserId))) !== null;
 }
 
+// Subscriptions and conference post states are stored as plain JSON (server/store/kvstore/subscription.go),
+// keyed by url.PathEscape of the Google resource name.
+
+/** The KV key of a channel subscription to a Meet space (subscriptionKey). */
+export const subscriptionKey = (spaceName: string) => `subscription_${encodeURIComponent(spaceName)}`;
+
+/** The KV key of the plugin's state for one conference record (conferencePostKey). */
+export const conferencePostKey = (conferenceName: string) => `conference_post_${encodeURIComponent(conferenceName)}`;
+
+/** A subscription as the plugin stores it (server/store/kvstore/kvstore.go Subscription), with the fields tests use. */
+export type StoredSubscription = {
+    space_id: string;
+    meeting_code: string;
+    channel_id: string;
+    last_seen_conference_start: string;
+    last_recurring_match_at?: string;
+    pending_conferences?: Array<{conference_name: string; conference_start: string; first_seen_at: string}>;
+    scheduled_announcements?: Array<{conference_name: string; event_instance_id: string; due_at: string}>;
+    [field: string]: unknown;
+};
+
+/** The plugin's state for one conference record (ConferencePostState). */
+export type StoredConferencePostState = {meeting_post_id: string; channel_id: string; suppressed?: boolean};
+
+async function kvGetJSON<T>(key: string): Promise<T | null> {
+    const value = await kvGet(key);
+    return value ? (JSON.parse(value.toString('utf8')) as T) : null;
+}
+
+export const storedSubscription = (spaceName: string) => kvGetJSON<StoredSubscription>(subscriptionKey(spaceName));
+
+/** Changes a stored subscription in place, e.g. to backdate its conference watermark. */
+export async function updateSubscription(spaceName: string, change: (subscription: StoredSubscription) => void) {
+    const subscription = await storedSubscription(spaceName);
+    if (!subscription) {
+        throw new Error(`No subscription stored for ${spaceName}`);
+    }
+    change(subscription);
+    await kvSet(subscriptionKey(spaceName), Buffer.from(JSON.stringify(subscription)));
+}
+
+/** The plugin's state for a conference record, or null when the poller has not decided on it yet. */
+export const conferencePostState = (conferenceName: string) => kvGetJSON<StoredConferencePostState>(conferencePostKey(conferenceName));
+
 /**
  * Deletes the plugin's KV rows: tokens, OAuth states, subscriptions, ad-hoc meetings and posted
  * conferences. The plugin keeps ad-hoc meetings for 24 hours and polls each one, so without this a
