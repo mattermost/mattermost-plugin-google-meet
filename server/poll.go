@@ -139,14 +139,6 @@ func (p *Plugin) pollSubscription(store kvstore.KVStore, sub *kvstore.Subscripti
 		return
 	}
 
-	subChanged := p.processDueScheduledAnnouncements(store, sub, token)
-	if p.processPendingConferences(store, sub, token) {
-		subChanged = true
-	}
-	if pruneExpiredEventBindings(sub) {
-		subChanged = true
-	}
-
 	records, err := p.listConferenceRecords(token, sub.SpaceID, sub.LastSeenConferenceStart)
 	if err != nil {
 		p.API.LogWarn("Failed to list conference records", "space_id", sub.SpaceID, "error", err.Error())
@@ -156,6 +148,14 @@ func (p *Plugin) pollSubscription(store kvstore.KVStore, sub *kvstore.Subscripti
 	endTimes := make(map[string]*time.Time, len(records))
 	for i := range records {
 		endTimes[records[i].Name] = records[i].EndTime
+	}
+
+	subChanged := p.processDueScheduledAnnouncements(store, sub, token)
+	if p.processPendingConferences(store, sub, token, endTimes) {
+		subChanged = true
+	}
+	if pruneExpiredEventBindings(sub) {
+		subChanged = true
 	}
 
 	// Buffer the high-water mark advance until the entire batch succeeds.
@@ -176,7 +176,7 @@ func (p *Plugin) pollSubscription(store kvstore.KVStore, sub *kvstore.Subscripti
 			continue
 		}
 
-		if state == nil && findPendingConferenceIndex(sub.PendingConferences, record.Name) >= 0 {
+		if state == nil && isAwaitingDecision(sub, record.Name) {
 			if record.StartTime != nil && record.StartTime.After(candidateLastSeen) {
 				candidateLastSeen = *record.StartTime
 			}
@@ -335,10 +335,11 @@ func (p *Plugin) suppressUnscheduledConference(store kvstore.KVStore, sub *kvsto
 	return store.StoreConferencePostState(confName, &kvstore.ConferencePostState{ChannelID: sub.ChannelID, Suppressed: true})
 }
 
-// processPendingConferences retries the calendar lookup for conferences whose lookup previously
-// failed on a recurring calendar meeting, then binds, defers, posts, or suppresses each one based
-// on the result. Entries still failing after pendingConferenceRetention are dropped unannounced.
-func (p *Plugin) processPendingConferences(store kvstore.KVStore, sub *kvstore.Subscription, token *kvstore.OAuth2Token) bool {
+// processPendingConferences retries conferences whose calendar lookup previously failed on a
+// recurring calendar meeting. An entry stays pending until its outcome is persisted and tracked,
+// so a failure at any step is retried; entries still failing after pendingConferenceRetention are
+// dropped unannounced.
+func (p *Plugin) processPendingConferences(store kvstore.KVStore, sub *kvstore.Subscription, token *kvstore.OAuth2Token, endTimes map[string]*time.Time) bool {
 	if len(sub.PendingConferences) == 0 {
 		return false
 	}
@@ -347,50 +348,98 @@ func (p *Plugin) processPendingConferences(store kvstore.KVStore, sub *kvstore.S
 	changed := false
 	remaining := make([]kvstore.PendingConference, 0, len(sub.PendingConferences))
 	for _, entry := range sub.PendingConferences {
-		instance, calErr := p.findScheduledInstance(token, sub.MeetingCode, entry.ConferenceStart)
-		if calErr != nil {
+		if err := p.resolvePendingConference(store, sub, token, entry, endTimes); err != nil {
 			if now.After(entry.FirstSeenAt.Add(pendingConferenceRetention)) {
-				p.API.LogWarn("Dropping pending conference after repeated calendar lookup failures", "conference", entry.ConferenceName, "space_id", sub.SpaceID, "error", calErr.Error())
+				p.API.LogWarn("Dropping pending conference after repeated failures", "conference", entry.ConferenceName, "space_id", sub.SpaceID, "error", err.Error())
 				changed = true
 				continue
 			}
-			p.API.LogWarn("Calendar schedule lookup failed; will retry next poll", "conference", entry.ConferenceName, "space_id", sub.SpaceID, "error", calErr.Error())
-			remaining = append(remaining, entry)
-			continue
-		}
-
-		start := entry.ConferenceStart
-		record := &conferenceRecord{Name: entry.ConferenceName, StartTime: &start}
-		var err error
-		if instance != nil {
-			_, err = p.classifyAgainstCalendarInstance(store, sub, record, instance)
-		} else {
-			err = p.suppressUnscheduledConference(store, sub, entry.ConferenceName)
-		}
-		if err != nil {
-			p.API.LogWarn("Failed to resolve pending conference; will retry next poll", "conference", entry.ConferenceName, "error", err.Error())
+			p.API.LogWarn("Failed to resolve pending conference; will retry next poll", "conference", entry.ConferenceName, "space_id", sub.SpaceID, "error", err.Error())
 			remaining = append(remaining, entry)
 			continue
 		}
 		changed = true
-
-		// Deferred-to-schedule entries have no state yet; ScheduledAnnouncements takes over.
-		state, err := store.GetConferencePostState(entry.ConferenceName)
-		if err == nil && state != nil && !state.Suppressed && !slices.Contains(sub.ActiveConferenceIDs, entry.ConferenceName) {
-			sub.ActiveConferenceIDs = append(sub.ActiveConferenceIDs, entry.ConferenceName)
-		}
 	}
 	sub.PendingConferences = remaining
 	return changed
 }
 
-func findPendingConferenceIndex(pending []kvstore.PendingConference, name string) int {
-	for i := range pending {
-		if pending[i].ConferenceName == name {
-			return i
+// resolvePendingConference classifies a pending conference unless an earlier attempt already
+// did, then tracks it for artifact polling. A nil error means the entry is no longer needed:
+// it was suppressed, posted and tracked, or deferred to ScheduledAnnouncements.
+func (p *Plugin) resolvePendingConference(store kvstore.KVStore, sub *kvstore.Subscription, token *kvstore.OAuth2Token, entry kvstore.PendingConference, endTimes map[string]*time.Time) error {
+	state, err := store.GetConferencePostState(entry.ConferenceName)
+	if err != nil {
+		return fmt.Errorf("failed to get conference post state: %w", err)
+	}
+	if state == nil {
+		deferred, err := p.classifyPendingConference(store, sub, token, entry, endTimes)
+		if err != nil || deferred {
+			return err
+		}
+		state, err = store.GetConferencePostState(entry.ConferenceName)
+		if err != nil {
+			return fmt.Errorf("failed to get conference post state after classification: %w", err)
+		}
+		if state == nil {
+			return errors.New("conference post state missing right after classification")
 		}
 	}
-	return -1
+	if !state.Suppressed && !slices.Contains(sub.ActiveConferenceIDs, entry.ConferenceName) {
+		sub.ActiveConferenceIDs = append(sub.ActiveConferenceIDs, entry.ConferenceName)
+	}
+	return nil
+}
+
+// classifyPendingConference applies classifyNewConference's rules to a pending conference, with
+// its record refreshed so a conference that ended before its occurrence's scheduled start is
+// suppressed, as processDueScheduledAnnouncements does for deferred ones.
+func (p *Plugin) classifyPendingConference(store kvstore.KVStore, sub *kvstore.Subscription, token *kvstore.OAuth2Token, entry kvstore.PendingConference, endTimes map[string]*time.Time) (bool, error) {
+	record, err := p.getConferenceRecord(token, entry.ConferenceName)
+	if err != nil {
+		return false, fmt.Errorf("failed to refresh conference record: %w", err)
+	}
+	record.Name = entry.ConferenceName
+	if record.StartTime == nil {
+		start := entry.ConferenceStart
+		record.StartTime = &start
+	}
+
+	if !p.getConfiguration().EnableCalendarScheduleSync {
+		return false, p.classifyWithCooldown(store, sub, record, endTimes)
+	}
+
+	instance, calErr := p.findScheduledInstance(token, sub.MeetingCode, *record.StartTime)
+	switch {
+	case calErr != nil && errors.Is(calErr, ErrInsufficientScopes):
+		p.API.LogWarn("Calendar schedule sync skipped: token missing calendar scope", "space_id", sub.SpaceID, "conference", record.Name, "error", calErr.Error())
+		p.notifyCalendarReconnectNeeded(store, sub.CreatedBy)
+		return false, p.classifyWithCooldown(store, sub, record, endTimes)
+	case calErr != nil:
+		return false, fmt.Errorf("calendar schedule lookup failed: %w", calErr)
+	case instance == nil:
+		return false, p.suppressUnscheduledConference(store, sub, record.Name)
+	case record.EndTime != nil && record.EndTime.Before(instance.Start):
+		p.API.LogInfo("Suppressing Google Meet conference notification: conference ended before its scheduled start", "conference", record.Name, "space_id", sub.SpaceID)
+		return false, store.StoreConferencePostState(record.Name, &kvstore.ConferencePostState{ChannelID: sub.ChannelID, Suppressed: true})
+	}
+	return p.classifyAgainstCalendarInstance(store, sub, record, instance)
+}
+
+// isAwaitingDecision reports whether a conference is already queued for a calendar retry or a
+// scheduled announcement, so re-listing it must not classify it again.
+func isAwaitingDecision(sub *kvstore.Subscription, name string) bool {
+	for _, entry := range sub.PendingConferences {
+		if entry.ConferenceName == name {
+			return true
+		}
+	}
+	for _, ann := range sub.ScheduledAnnouncements {
+		if ann.ConferenceName == name {
+			return true
+		}
+	}
+	return false
 }
 
 // classifyAgainstCalendarInstance handles a conference record known to belong to calendar
