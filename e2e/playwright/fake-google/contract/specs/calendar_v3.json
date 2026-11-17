@@ -132,6 +132,9 @@
         "kind": {
           "type": "string"
         },
+        "recurringEventId": {
+          "type": "string"
+        },
         "start": {
           "$ref": "EventDateTime"
         },

@@ -35,6 +35,23 @@ export type FakeRequest = {method: string; host: string; path: string; query: st
 
 export type FakeSpace = {name: string; meetingCode: string; meetingUri: string; owner: FakeGoogleUserKey};
 
+export type FakeConference = {name: string; space: string; startTime: string; endTime?: string};
+
+export type FakeCalendarEvent = {id: string; status: string; summary: string; start: {dateTime?: string; date?: string}; end: {dateTime?: string; date?: string}; conferenceId?: string; recurringEventId?: string};
+
+/** Offsets are seconds from now, so tests can backdate instead of waiting. */
+export type FakeCalendarEventOptions = {
+    user?: FakeGoogleUserKey;
+    summary?: string;
+    startOffsetSeconds: number;
+    endOffsetSeconds: number;
+    conferenceId?: string;
+    /** Set on every occurrence of a recurring event; create one event per occurrence with the same value. */
+    recurringEventId?: string;
+    status?: 'confirmed' | 'cancelled';
+    allDay?: boolean;
+};
+
 export const fakeGoogle = {
     /** Clears everything. `keepViolations` keeps the violation lists (the per-test reset in lib/test.ts). */
     reset: (keepViolations = false) => control('POST', 'reset', {keepViolations}),
@@ -50,6 +67,13 @@ export const fakeGoogle = {
     failNext: (methodId: string, status: number, reason?: string) => control('POST', 'fail', {methodId, status, reason}),
 
     spaces: async () => (await control<{value: FakeSpace[]}>('GET', 'spaces')).value,
+    /** A space the user created outside Mattermost, e.g. to subscribe a channel to. */
+    createSpace: (user: FakeGoogleUserKey = 'owner') => control<FakeSpace>('POST', 'spaces', {user}),
+    /** A conference in `space` (its name or meeting code). Offsets are seconds from now; no end offset means still running. */
+    createConference: (options: {space: string; startOffsetSeconds: number; endOffsetSeconds?: number}) =>
+        control<FakeConference>('POST', 'conferences', options),
+    /** An event on the user's primary calendar. */
+    createCalendarEvent: (options: FakeCalendarEventOptions) => control<FakeCalendarEvent>('POST', 'events', options),
     requests: async () => (await control<{value: FakeRequest[]}>('GET', 'requests')).value,
 
     /** Everything recorded so far, including `late`: violations deferred past the test that caused them. */

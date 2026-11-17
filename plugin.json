@@ -77,7 +77,7 @@
                 "key": "EnableCalendarScheduleSync",
                 "display_name": "Sync Conference Posts to Calendar Schedule",
                 "type": "bool",
-                "help_text": "When enabled, conference-started posts for subscribed meeting spaces are timed to match the subscription creator's primary calendar event instead of the moment someone first joins, avoiding early-join drift and off-hours false positives. Administrators must enable the Google Calendar API in the same Google Cloud project. Requires the calendar.events.readonly OAuth scope; users must run /meet connect again to grant it after enabling this setting. Conferences with no matching calendar event fall back to the Conference Start Cooldown setting above. Default: disabled.",
+                "help_text": "When enabled, conference-started posts for subscribed meeting spaces are timed to match the subscription creator's primary calendar event instead of the moment someone first joins, avoiding early-join drift and off-hours false positives. Administrators must enable the Google Calendar API in the same Google Cloud project. Requires the calendar.events.readonly OAuth scope; users must run /meet connect again to grant it after enabling this setting. Conferences with no matching calendar event fall back to the Conference Start Cooldown setting above, except on subscriptions backing a recurring calendar meeting, where only calendar occurrences can announce a conference. Default: disabled.",
                 "default": false
             }
         ]

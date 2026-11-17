@@ -39,12 +39,14 @@ type calendarConferenceData struct {
 }
 
 type calendarEvent struct {
-	ID             string                  `json:"id"`
-	Status         string                  `json:"status"`
-	Summary        string                  `json:"summary"`
-	Start          calendarEventDateTime   `json:"start"`
-	End            calendarEventDateTime   `json:"end"`
-	ConferenceData *calendarConferenceData `json:"conferenceData,omitempty"`
+	ID string `json:"id"`
+	// RecurringEventID is set on every occurrence of a recurring event (singleEvents=true).
+	RecurringEventID string                  `json:"recurringEventId,omitempty"`
+	Status           string                  `json:"status"`
+	Summary          string                  `json:"summary"`
+	Start            calendarEventDateTime   `json:"start"`
+	End              calendarEventDateTime   `json:"end"`
+	ConferenceData   *calendarConferenceData `json:"conferenceData,omitempty"`
 }
 
 // calendarInstance is the resolved, single-occurrence calendar event backing a Meet conference.
@@ -55,6 +57,7 @@ type calendarInstance struct {
 	Summary    string
 	Start      time.Time
 	End        time.Time
+	Recurring  bool
 }
 
 // calendarGet performs an authenticated GET against the Calendar REST API and returns the raw body.
@@ -179,5 +182,6 @@ func calendarInstanceFromEvent(event *calendarEvent, meetingCode string) *calend
 		Summary:    event.Summary,
 		Start:      *event.Start.DateTime,
 		End:        *event.End.DateTime,
+		Recurring:  event.RecurringEventID != "",
 	}
 }

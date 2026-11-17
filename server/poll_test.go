@@ -5,10 +5,16 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
+	"math/rand"
 	"net/http"
 	"net/http/httptest"
+	"slices"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/mattermost/mattermost/server/public/model"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -1145,6 +1151,258 @@ func TestPollSubscription_CalendarNoMatchFallsBackToCooldown(t *testing.T) {
 	assert.Contains(t, sub.ActiveConferenceIDs, "conferenceRecords/rec1")
 }
 
+// recurringMeetingTestServer serves the listed conference records plus a calendar endpoint driven
+// by calendarStatus/calendarItems, so tests can change the calendar's answer between poll cycles.
+// Like Google, the calendar only returns events overlapping the queried [timeMin, timeMax), and a
+// conference record can be fetched by name after it stops being listed (pastRecords).
+type recurringMeetingTestServer struct {
+	records              []conferenceRecord
+	pastRecords          []conferenceRecord
+	calendarStatus       int
+	calendarScopeMissing bool
+	calendarItems        []calendarEvent
+	calendarCalls        int
+}
+
+func (s *recurringMeetingTestServer) install(t *testing.T) {
+	t.Helper()
+	withCalendarPollServer(t, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/v2/conferenceRecords":
+			w.WriteHeader(http.StatusOK)
+			require.NoError(t, json.NewEncoder(w).Encode(map[string]any{"conferenceRecords": s.records}))
+		case strings.HasPrefix(r.URL.Path, "/v2/conferenceRecords/") && strings.Count(r.URL.Path, "/") == 3:
+			name := strings.TrimPrefix(r.URL.Path, "/v2/")
+			for _, record := range slices.Concat(s.records, s.pastRecords) {
+				if record.Name == name {
+					w.WriteHeader(http.StatusOK)
+					require.NoError(t, json.NewEncoder(w).Encode(record))
+					return
+				}
+			}
+			w.WriteHeader(http.StatusOK)
+			require.NoError(t, json.NewEncoder(w).Encode(map[string]any{}))
+		case r.URL.Path == "/calendars/primary/events":
+			s.calendarCalls++
+			if s.calendarScopeMissing {
+				w.WriteHeader(http.StatusForbidden)
+				_, _ = w.Write([]byte(`{"error":{"reason":"ACCESS_TOKEN_SCOPE_INSUFFICIENT"}}`))
+				return
+			}
+			if s.calendarStatus != http.StatusOK {
+				w.WriteHeader(s.calendarStatus)
+				return
+			}
+			timeMin, err := time.Parse(time.RFC3339Nano, r.URL.Query().Get("timeMin"))
+			require.NoError(t, err)
+			timeMax, err := time.Parse(time.RFC3339Nano, r.URL.Query().Get("timeMax"))
+			require.NoError(t, err)
+			var items []calendarEvent
+			for _, event := range s.calendarItems {
+				if event.End.DateTime.After(timeMin) && event.Start.DateTime.Before(timeMax) {
+					items = append(items, event)
+				}
+			}
+			w.WriteHeader(http.StatusOK)
+			require.NoError(t, json.NewEncoder(w).Encode(map[string]any{"items": items}))
+		default:
+			w.WriteHeader(http.StatusOK)
+			require.NoError(t, json.NewEncoder(w).Encode(map[string]any{}))
+		}
+	})
+}
+
+// newRecurringMeetingTestPlugin returns a calendar-synced plugin and a subscription that has
+// recently matched an occurrence of a recurring calendar event.
+func newRecurringMeetingTestPlugin(t *testing.T) (*Plugin, *mockPluginAPI, *mockKVStore, *kvstore.Subscription) {
+	t.Helper()
+	now := time.Now().UTC()
+	api := &mockPluginAPI{siteURL: "http://localhost:8065", captureAllPosts: true}
+	kv := newMockKVStore()
+	kv.tokens["user1"] = &kvstore.OAuth2Token{AccessToken: "test-token", Expiry: now.Add(time.Hour)}
+
+	p := pollTestPlugin(t, api, kv)
+	p.configuration.EnableCalendarScheduleSync = true
+
+	sub := &kvstore.Subscription{
+		SpaceID:                 "spaces/abc123",
+		MeetingCode:             "abc-mnop-xyz",
+		ChannelID:               "chan1",
+		CreatedBy:               "user1",
+		LastSeenConferenceStart: now.Add(-time.Hour),
+		LastRecurringMatchAt:    now.Add(-7 * 24 * time.Hour),
+	}
+	return p, api, kv, sub
+}
+
+// TestPollSubscription_RecurringMeetingUnmatchedConferenceSuppressed reproduces the misfire where
+// someone opens the link of a recurring calendar meeting outside any scheduled occurrence: only a
+// calendar occurrence may announce a conference there, so nothing is posted.
+func TestPollSubscription_RecurringMeetingUnmatchedConferenceSuppressed(t *testing.T) {
+	start := time.Now().UTC()
+	srv := &recurringMeetingTestServer{
+		records:        []conferenceRecord{{Name: "conferenceRecords/rec1", StartTime: &start}},
+		calendarStatus: http.StatusOK,
+	}
+	srv.install(t)
+	p, api, kv, sub := newRecurringMeetingTestPlugin(t)
+
+	p.pollSubscription(kv, sub)
+
+	assert.Empty(t, api.allPosts, "a conference outside every occurrence of a recurring calendar meeting must not be announced")
+	assert.Empty(t, sub.PendingConferences)
+	assert.NotContains(t, sub.ActiveConferenceIDs, "conferenceRecords/rec1")
+	state, err := kv.GetConferencePostState("conferenceRecords/rec1")
+	require.NoError(t, err)
+	require.NotNil(t, state)
+	assert.True(t, state.Suppressed)
+}
+
+// TestPollSubscription_RecurringMeetingCalendarErrorRetried verifies that a transient calendar
+// failure on a recurring calendar meeting doesn't fall back to posting immediately: the lookup is
+// retried, and once it succeeds the calendar decides.
+func TestPollSubscription_RecurringMeetingCalendarErrorRetried(t *testing.T) {
+	cases := []struct {
+		name          string
+		matches       bool
+		wantScheduled bool
+	}{
+		{"retry matches an occurrence", true, true},
+		{"retry finds no occurrence", false, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			now := time.Now().UTC()
+			scheduledStart := now.Add(10 * time.Minute)
+			srv := &recurringMeetingTestServer{
+				records:        []conferenceRecord{{Name: "conferenceRecords/rec1", StartTime: &now}},
+				calendarStatus: http.StatusInternalServerError,
+			}
+			srv.install(t)
+			p, api, kv, sub := newRecurringMeetingTestPlugin(t)
+
+			p.pollSubscription(kv, sub)
+
+			assert.Empty(t, api.allPosts, "a calendar lookup failure should not post immediately")
+			require.Len(t, sub.PendingConferences, 1)
+			assert.Equal(t, "conferenceRecords/rec1", sub.PendingConferences[0].ConferenceName)
+
+			p.pollSubscription(kv, sub)
+			require.Len(t, sub.PendingConferences, 1, "the lookup keeps being retried while it fails")
+
+			srv.records = nil
+			srv.calendarStatus = http.StatusOK
+			if tc.matches {
+				event := calendarEventForCode("evt1", "abc-mnop-xyz", "Weekly sync", scheduledStart, scheduledStart.Add(30*time.Minute))
+				event.RecurringEventID = "series1"
+				srv.calendarItems = []calendarEvent{event}
+			}
+			p.pollSubscription(kv, sub)
+
+			assert.Empty(t, api.allPosts)
+			assert.Empty(t, sub.PendingConferences)
+			if tc.wantScheduled {
+				require.Len(t, sub.ScheduledAnnouncements, 1, "a matched occurrence should be deferred to its scheduled start")
+				return
+			}
+			assert.Empty(t, sub.ScheduledAnnouncements)
+			state, err := kv.GetConferencePostState("conferenceRecords/rec1")
+			require.NoError(t, err)
+			require.NotNil(t, state)
+			assert.True(t, state.Suppressed)
+		})
+	}
+}
+
+// TestPollSubscription_NonRecurringSubscriptionKeepsImmediateFallback verifies that the
+// calendar-only rule applies only to recurring calendar meetings: otherwise (never matched a
+// recurring occurrence, or last match outside recurringMatchWindow) unmatched conferences and
+// calendar errors still fall back to the cooldown heuristic and post immediately.
+func TestPollSubscription_NonRecurringSubscriptionKeepsImmediateFallback(t *testing.T) {
+	cases := []struct {
+		name                 string
+		calendarStatus       int
+		lastRecurringMatchAt time.Time
+	}{
+		{"no match, never matched a recurring event", http.StatusOK, time.Time{}},
+		{"no match, recurring match too old", http.StatusOK, time.Now().Add(-recurringMatchWindow - time.Hour)},
+		{"calendar error, never matched a recurring event", http.StatusInternalServerError, time.Time{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			start := time.Now().UTC()
+			srv := &recurringMeetingTestServer{
+				records:        []conferenceRecord{{Name: "conferenceRecords/rec1", StartTime: &start}},
+				calendarStatus: tc.calendarStatus,
+			}
+			srv.install(t)
+			p, api, kv, sub := newRecurringMeetingTestPlugin(t)
+			sub.LastRecurringMatchAt = tc.lastRecurringMatchAt
+
+			p.pollSubscription(kv, sub)
+
+			require.Len(t, api.allPosts, 1, "a non-recurring subscription should announce immediately")
+			assert.Equal(t, postTypeConference, api.allPosts[0].Type)
+			assert.Empty(t, sub.PendingConferences)
+		})
+	}
+}
+
+// TestPollSubscription_RecurringCalendarMatchMarksSubscription verifies that matching a conference
+// to an occurrence of a recurring calendar event marks the subscription as a recurring calendar
+// meeting, while a one-off event does not.
+func TestPollSubscription_RecurringCalendarMatchMarksSubscription(t *testing.T) {
+	for _, recurringID := range []string{"", "series1"} {
+		t.Run("recurringEventId="+recurringID, func(t *testing.T) {
+			now := time.Now().UTC()
+			scheduledStart := now.Add(-time.Minute)
+			event := calendarEventForCode("evt1", "abc-mnop-xyz", "Weekly sync", scheduledStart, scheduledStart.Add(30*time.Minute))
+			event.RecurringEventID = recurringID
+			srv := &recurringMeetingTestServer{
+				records:        []conferenceRecord{{Name: "conferenceRecords/rec1", StartTime: &now}},
+				calendarStatus: http.StatusOK,
+				calendarItems:  []calendarEvent{event},
+			}
+			srv.install(t)
+			p, api, kv, sub := newRecurringMeetingTestPlugin(t)
+			sub.LastRecurringMatchAt = time.Time{}
+
+			p.pollSubscription(kv, sub)
+
+			require.Len(t, api.allPosts, 1)
+			if recurringID == "" {
+				assert.True(t, sub.LastRecurringMatchAt.IsZero())
+				return
+			}
+			assert.True(t, sub.LastRecurringMatchAt.Equal(scheduledStart))
+			assert.True(t, isRecurringCalendarMeeting(sub))
+		})
+	}
+}
+
+func TestProcessPendingConferences_DropsExpiredLookupFailures(t *testing.T) {
+	withCalendarPollServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	})
+
+	api := &mockPluginAPI{siteURL: "http://localhost:8065", captureAllPosts: true}
+	kv := newMockKVStore()
+	p := pollTestPlugin(t, api, kv)
+	now := time.Now()
+	sub := &kvstore.Subscription{
+		PendingConferences: []kvstore.PendingConference{
+			{ConferenceName: "conferenceRecords/expired", ConferenceStart: now, FirstSeenAt: now.Add(-pendingConferenceRetention - time.Hour)},
+			{ConferenceName: "conferenceRecords/retry", ConferenceStart: now, FirstSeenAt: now},
+		},
+	}
+
+	changed := p.processPendingConferences(kv, sub, newTestToken(), nil)
+	assert.True(t, changed)
+	require.Len(t, sub.PendingConferences, 1)
+	assert.Equal(t, "conferenceRecords/retry", sub.PendingConferences[0].ConferenceName)
+	assert.Empty(t, api.allPosts)
+}
+
 // TestPollSubscription_CalendarInsufficientScopesFallsBackAndNotifiesCreator verifies that a
 // token missing the calendar scope doesn't block announcements (falls back to the cooldown
 // heuristic) and that the creator is DM'd once, not on every poll cycle.
@@ -1210,4 +1468,417 @@ func TestPollSubscription_CalendarInsufficientScopesFallsBackAndNotifiesCreator(
 
 	require.Len(t, api.allPosts, 1, "second conference should post once via fallback, without a repeat DM")
 	assert.Equal(t, postTypeConference, api.allPosts[0].Type)
+}
+
+// dailySeries returns occurrences of a daily recurring calendar meeting on "abc-mnop-xyz", one per
+// day offset, each starting at anchor plus that many days and lasting an hour.
+func dailySeries(anchor time.Time, days ...int) []calendarEvent {
+	events := make([]calendarEvent, 0, len(days))
+	for _, day := range days {
+		start := anchor.Add(time.Duration(day) * 24 * time.Hour)
+		event := calendarEventForCode(fmt.Sprintf("series1_%s", start.Format("20060102T150405Z")), "abc-mnop-xyz", "PDE Meeting", start, start.Add(time.Hour))
+		event.RecurringEventID = "series1"
+		events = append(events, event)
+	}
+	return events
+}
+
+// TestPollSubscription_RecurringMeetingIncidentReplay replays the reported misfire end to end: the
+// subscription learns it backs a recurring meeting from a real occurrence, then someone opens the
+// link the next day, hours away from any occurrence, and nothing must be posted. The cooldown is
+// disabled, so the calendar rule alone has to stop it.
+func TestPollSubscription_RecurringMeetingIncidentReplay(t *testing.T) {
+	now := time.Now().UTC()
+	yesterday := now.Add(-20 * time.Hour)
+	yesterdayEnd := yesterday.Add(48 * time.Minute)
+	srv := &recurringMeetingTestServer{
+		records:        []conferenceRecord{{Name: "conferenceRecords/yesterday", StartTime: &yesterday, EndTime: &yesterdayEnd}},
+		calendarStatus: http.StatusOK,
+		calendarItems:  dailySeries(yesterday, 0, 1),
+	}
+	srv.install(t)
+	p, api, kv, sub := newRecurringMeetingTestPlugin(t)
+	sub.LastSeenConferenceStart = now.Add(-48 * time.Hour)
+	sub.LastRecurringMatchAt = time.Time{}
+
+	p.pollSubscription(kv, sub)
+
+	require.Len(t, api.allPosts, 1, "yesterday's scheduled occurrence should be announced")
+	assert.True(t, isRecurringCalendarMeeting(sub), "matching a recurring occurrence should mark the subscription")
+
+	api.allPosts = nil
+	srv.records = []conferenceRecord{{Name: "conferenceRecords/stray", StartTime: &now}}
+	p.pollSubscription(kv, sub)
+
+	assert.Empty(t, api.allPosts, "a stray join hours away from any occurrence must not be announced")
+	state, err := kv.GetConferencePostState("conferenceRecords/stray")
+	require.NoError(t, err)
+	require.NotNil(t, state)
+	assert.True(t, state.Suppressed)
+	assert.NotContains(t, sub.ActiveConferenceIDs, "conferenceRecords/stray")
+}
+
+// TestPollSubscription_RecurringMeetingOnlyCalendarOccurrencesAnnounce throws hundreds of
+// conferences at random times (fixed seed, so failures reproduce) at a recurring calendar meeting
+// and checks the invariant behind the fix: a conference is announced, or deferred to its
+// occurrence's start, only when it starts within the match window of an occurrence, and is
+// suppressed otherwise. The cooldown is disabled so it can't mask a misfire.
+func TestPollSubscription_RecurringMeetingOnlyCalendarOccurrencesAnnounce(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	// Occurrences 20 minutes from now (and the same time on earlier days), so conferences shortly
+	// before the next one exercise the deferral path, not just immediate posts.
+	occurrences := dailySeries(now.Add(20*time.Minute), -3, -2, -1, 0)
+	srv := &recurringMeetingTestServer{calendarStatus: http.StatusOK, calendarItems: occurrences}
+	srv.install(t)
+
+	rng := rand.New(rand.NewSource(20261113)) //nolint:gosec // fixed seed so failures reproduce
+	var announced, deferred, suppressed int
+	for i := range 400 {
+		// Half the samples anywhere in the last 80 hours, half within 45 minutes of an occurrence
+		// so the window edges and the deferral path get dense coverage.
+		start := now.Add(-time.Duration(rng.Int63n(int64(80 * time.Hour))))
+		if i%2 == 1 {
+			occurrence := *occurrences[rng.Intn(len(occurrences))].Start.DateTime
+			start = occurrence.Add(time.Duration(rng.Int63n(int64(90*time.Minute))) - 45*time.Minute)
+		}
+		if start.After(now) {
+			continue // conferences can't start in the future
+		}
+		var nearest *calendarEvent
+		var nearestDelta time.Duration
+		for j := range occurrences {
+			delta := occurrences[j].Start.DateTime.Sub(start).Abs()
+			if nearest == nil || delta < nearestDelta {
+				nearest, nearestDelta = &occurrences[j], delta
+			}
+		}
+		if (nearestDelta - calendarMatchLead).Abs() < time.Minute {
+			continue // too close to the window edge to be deterministic
+		}
+		inWindow := nearestDelta < calendarMatchLead
+
+		name := fmt.Sprintf("conferenceRecords/random%d", i)
+		srv.records = []conferenceRecord{{Name: name, StartTime: &start}}
+		p, api, kv, sub := newRecurringMeetingTestPlugin(t)
+		sub.LastSeenConferenceStart = now.Add(-100 * time.Hour)
+
+		p.pollSubscription(kv, sub)
+
+		msg := fmt.Sprintf("sample %d: conference at %s, nearest occurrence %s away", i, start.Format(time.RFC3339), nearestDelta)
+		state, err := kv.GetConferencePostState(name)
+		require.NoError(t, err, msg)
+		switch {
+		case !inWindow:
+			suppressed++
+			assert.Empty(t, api.allPosts, msg)
+			assert.Empty(t, sub.ScheduledAnnouncements, msg)
+			require.NotNil(t, state, msg)
+			assert.True(t, state.Suppressed, msg)
+		case nearest.Start.DateTime.After(time.Now()):
+			deferred++
+			assert.Empty(t, api.allPosts, msg)
+			require.Len(t, sub.ScheduledAnnouncements, 1, msg)
+			assert.Equal(t, nearest.ID, sub.ScheduledAnnouncements[0].EventInstanceID, msg)
+		default:
+			announced++
+			require.Len(t, api.allPosts, 1, msg)
+			assert.Equal(t, nearest.Start.DateTime.UTC().Format(time.RFC3339), api.allPosts[0].Props["scheduled_start"], msg)
+		}
+		assert.Empty(t, sub.PendingConferences, msg)
+	}
+
+	assert.Positive(t, announced, "the samples should include conferences at an occurrence")
+	assert.Positive(t, deferred, "the samples should include early joins before the next occurrence")
+	assert.Greater(t, suppressed, announced+deferred, "most random conferences fall outside the occurrences")
+}
+
+// TestPollSubscription_RecurringMeetingStrayJoinsNeverPostAcrossCycles drives many poll cycles of
+// stray joins, mixed with calendar outages, against a recurring calendar meeting, and checks
+// nothing is ever announced and no conference is classified twice.
+func TestPollSubscription_RecurringMeetingStrayJoinsNeverPostAcrossCycles(t *testing.T) {
+	now := time.Now().UTC()
+	srv := &recurringMeetingTestServer{
+		calendarStatus: http.StatusOK,
+		calendarItems:  dailySeries(now.Add(-6*time.Hour), -1, 0, 1),
+	}
+	srv.install(t)
+	p, api, kv, sub := newRecurringMeetingTestPlugin(t)
+	sub.LastSeenConferenceStart = now.Add(-5 * time.Hour)
+
+	for cycle := range 12 {
+		start := now.Add(-4*time.Hour + time.Duration(cycle)*15*time.Minute)
+		srv.records = []conferenceRecord{{Name: fmt.Sprintf("conferenceRecords/stray%d", cycle), StartTime: &start}}
+		// Every third cycle the calendar is down, so the stray goes through the retry path.
+		if cycle%3 == 0 {
+			srv.calendarStatus = http.StatusServiceUnavailable
+		} else {
+			srv.calendarStatus = http.StatusOK
+		}
+		p.pollSubscription(kv, sub)
+		assert.Empty(t, api.allPosts, "cycle %d: a stray join must never be announced", cycle)
+	}
+
+	srv.records = nil
+	srv.calendarStatus = http.StatusOK
+	p.pollSubscription(kv, sub)
+
+	assert.Empty(t, api.allPosts)
+	assert.Empty(t, sub.PendingConferences, "every retried lookup should be resolved once the calendar is back")
+	for cycle := range 12 {
+		state, err := kv.GetConferencePostState(fmt.Sprintf("conferenceRecords/stray%d", cycle))
+		require.NoError(t, err)
+		require.NotNil(t, state, "cycle %d", cycle)
+		assert.True(t, state.Suppressed, "cycle %d", cycle)
+	}
+	assert.Empty(t, sub.ScheduledAnnouncements)
+	assert.Empty(t, sub.ActiveConferenceIDs)
+}
+
+// TestPollSubscription_RecurringMeetingPendingLookupNotDuplicated verifies that while a lookup is
+// being retried, Google listing the same conference again doesn't queue it twice or spend a
+// second calendar call on it.
+func TestPollSubscription_RecurringMeetingPendingLookupNotDuplicated(t *testing.T) {
+	start := time.Now().UTC()
+	srv := &recurringMeetingTestServer{
+		records:        []conferenceRecord{{Name: "conferenceRecords/rec1", StartTime: &start}},
+		calendarStatus: http.StatusInternalServerError,
+	}
+	srv.install(t)
+	p, api, kv, sub := newRecurringMeetingTestPlugin(t)
+
+	for cycle := 1; cycle <= 3; cycle++ {
+		// Rewind the watermark so Google lists the record again, as after a partial batch failure.
+		sub.LastSeenConferenceStart = start.Add(-time.Minute)
+		p.pollSubscription(kv, sub)
+
+		assert.Equal(t, cycle, srv.calendarCalls, "one calendar lookup per cycle")
+		require.Len(t, sub.PendingConferences, 1)
+		assert.Empty(t, api.allPosts)
+	}
+}
+
+// queuePendingConference polls once with the calendar down so the subscription's only listed
+// conference is queued for a calendar retry, then stops listing it, as Google does once the
+// watermark passes it.
+func queuePendingConference(t *testing.T, p *Plugin, kv *mockKVStore, sub *kvstore.Subscription, srv *recurringMeetingTestServer) {
+	t.Helper()
+	srv.calendarStatus = http.StatusServiceUnavailable
+	p.pollSubscription(kv, sub)
+	require.Len(t, sub.PendingConferences, 1)
+	srv.pastRecords = append(srv.pastRecords, srv.records...)
+	srv.records = nil
+	srv.calendarStatus = http.StatusOK
+}
+
+func countConferencePosts(posts []*model.Post) int {
+	count := 0
+	for _, post := range posts {
+		if post.Type == postTypeConference {
+			count++
+		}
+	}
+	return count
+}
+
+// TestPollSubscription_PendingConferenceFallsBackWithoutPrerequisites verifies a queued retry
+// follows the same prerequisites as a new conference: if calendar sync is disabled or the calendar
+// scope is revoked before the retry, the conference goes through the cooldown heuristic instead of
+// being suppressed, and a missing scope prompts the owner to reconnect.
+func TestPollSubscription_PendingConferenceFallsBackWithoutPrerequisites(t *testing.T) {
+	cases := []struct {
+		name         string
+		disableSync  bool
+		scopeMissing bool
+	}{
+		{"calendar sync disabled", true, false},
+		{"calendar scope revoked", false, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			start := time.Now().UTC()
+			srv := &recurringMeetingTestServer{records: []conferenceRecord{{Name: "conferenceRecords/rec1", StartTime: &start}}}
+			srv.install(t)
+			p, api, kv, sub := newRecurringMeetingTestPlugin(t)
+			queuePendingConference(t, p, kv, sub, srv)
+			callsBeforeRetry := srv.calendarCalls
+
+			p.configuration.EnableCalendarScheduleSync = !tc.disableSync
+			srv.calendarScopeMissing = tc.scopeMissing
+			p.pollSubscription(kv, sub)
+
+			assert.Equal(t, 1, countConferencePosts(api.allPosts), "without its prerequisites the retry must fall back to the cooldown heuristic")
+			assert.Empty(t, sub.PendingConferences)
+			assert.Contains(t, sub.ActiveConferenceIDs, "conferenceRecords/rec1")
+			if tc.disableSync {
+				assert.Equal(t, callsBeforeRetry, srv.calendarCalls, "with sync disabled the retry must not call the calendar")
+			}
+			sent, err := kv.HasCalendarReconnectNoticeSent("user1")
+			require.NoError(t, err)
+			assert.Equal(t, tc.scopeMissing, sent, "a revoked scope should prompt the owner to reconnect")
+		})
+	}
+}
+
+// TestPollSubscription_PendingConferenceEndedBeforeOccurrenceSuppressed covers a calendar outage
+// lasting past an occurrence's start: someone who joined early and left before the scheduled start
+// must not be announced once the calendar recovers, while a conference still running at the start is.
+func TestPollSubscription_PendingConferenceEndedBeforeOccurrenceSuppressed(t *testing.T) {
+	cases := []struct {
+		name         string
+		endOffset    time.Duration
+		wantAnnounce bool
+	}{
+		{"left before the scheduled start", -3 * time.Minute, false},
+		{"still in the meeting at the scheduled start", time.Minute, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			now := time.Now().UTC()
+			occurrenceStart := now.Add(-2 * time.Minute)
+			start := occurrenceStart.Add(-13 * time.Minute)
+			end := occurrenceStart.Add(tc.endOffset)
+			srv := &recurringMeetingTestServer{
+				records:       []conferenceRecord{{Name: "conferenceRecords/rec1", StartTime: &start}},
+				calendarItems: dailySeries(occurrenceStart, -1, 0),
+			}
+			srv.install(t)
+			p, api, kv, sub := newRecurringMeetingTestPlugin(t)
+			queuePendingConference(t, p, kv, sub, srv)
+			srv.pastRecords[0].EndTime = &end
+
+			p.pollSubscription(kv, sub)
+
+			assert.Empty(t, sub.PendingConferences)
+			state, err := kv.GetConferencePostState("conferenceRecords/rec1")
+			require.NoError(t, err)
+			require.NotNil(t, state)
+			if !tc.wantAnnounce {
+				assert.Empty(t, api.allPosts, "an early join that left before the occurrence must not be announced")
+				assert.True(t, state.Suppressed)
+				return
+			}
+			require.Len(t, api.allPosts, 1)
+			assert.False(t, state.Suppressed)
+			assert.Contains(t, sub.ActiveConferenceIDs, "conferenceRecords/rec1")
+		})
+	}
+}
+
+// TestPollSubscription_PendingConferenceKeptUntilTracked verifies a retried conference that was
+// posted but whose state couldn't be read back stays pending, and the next cycle tracks it for
+// artifacts without posting it again, whether it was posted for a calendar occurrence or through
+// the cooldown fallback (which has no calendar binding to deduplicate against).
+func TestPollSubscription_PendingConferenceKeptUntilTracked(t *testing.T) {
+	for _, syncEnabled := range []bool{true, false} {
+		t.Run(fmt.Sprintf("calendar sync enabled=%t", syncEnabled), func(t *testing.T) {
+			now := time.Now().UTC()
+			srv := &recurringMeetingTestServer{
+				records:       []conferenceRecord{{Name: "conferenceRecords/rec1", StartTime: &now}},
+				calendarItems: dailySeries(now.Add(-2*time.Minute), 0),
+			}
+			srv.install(t)
+			p, api, kv, sub := newRecurringMeetingTestPlugin(t)
+			queuePendingConference(t, p, kv, sub, srv)
+			p.configuration.EnableCalendarScheduleSync = syncEnabled
+
+			reads := 0
+			kv.getConfStateErr = func(name string) error {
+				if name != "conferenceRecords/rec1" {
+					return nil
+				}
+				reads++
+				if reads == 2 { // the read right after classification
+					return assert.AnError
+				}
+				return nil
+			}
+			p.pollSubscription(kv, sub)
+
+			require.Len(t, api.allPosts, 1)
+			require.Len(t, sub.PendingConferences, 1, "the entry must stay pending until the conference is tracked")
+			assert.NotContains(t, sub.ActiveConferenceIDs, "conferenceRecords/rec1")
+
+			kv.getConfStateErr = nil
+			p.pollSubscription(kv, sub)
+
+			assert.Len(t, api.allPosts, 1, "the retry must not post the conference again")
+			assert.Empty(t, sub.PendingConferences)
+			assert.Contains(t, sub.ActiveConferenceIDs, "conferenceRecords/rec1")
+		})
+	}
+}
+
+// TestPollSubscription_RecurringMeetingFallsBackWithoutPrerequisites verifies the calendar-only
+// rule needs everything it relies on: with calendar sync off, or a token missing the calendar
+// scope, a recurring meeting's conferences go through the cooldown heuristic and post.
+func TestPollSubscription_RecurringMeetingFallsBackWithoutPrerequisites(t *testing.T) {
+	cases := []struct {
+		name           string
+		syncEnabled    bool
+		calendarStatus int
+	}{
+		{"calendar sync disabled", false, http.StatusOK},
+		{"token missing the calendar scope", true, http.StatusForbidden},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			start := time.Now().UTC()
+			srv := &recurringMeetingTestServer{
+				records:        []conferenceRecord{{Name: "conferenceRecords/rec1", StartTime: &start}},
+				calendarStatus: http.StatusOK,
+			}
+			srv.install(t)
+			if tc.calendarStatus == http.StatusForbidden {
+				withCalendarPollServer(t, func(w http.ResponseWriter, r *http.Request) {
+					switch r.URL.Path {
+					case "/v2/conferenceRecords":
+						w.WriteHeader(http.StatusOK)
+						require.NoError(t, json.NewEncoder(w).Encode(map[string]any{"conferenceRecords": srv.records}))
+					case "/calendars/primary/events":
+						w.WriteHeader(http.StatusForbidden)
+						_, _ = w.Write([]byte(`{"error":{"reason":"ACCESS_TOKEN_SCOPE_INSUFFICIENT"}}`))
+					default:
+						w.WriteHeader(http.StatusOK)
+						require.NoError(t, json.NewEncoder(w).Encode(map[string]any{}))
+					}
+				})
+			}
+			p, api, kv, sub := newRecurringMeetingTestPlugin(t)
+			p.configuration.EnableCalendarScheduleSync = tc.syncEnabled
+
+			p.pollSubscription(kv, sub)
+
+			var conferencePosts int
+			for _, post := range api.allPosts {
+				if post.Type == postTypeConference {
+					conferencePosts++
+				}
+			}
+			assert.Equal(t, 1, conferencePosts, "without its prerequisites the calendar-only rule must not apply")
+			assert.Empty(t, sub.PendingConferences)
+			if !tc.syncEnabled {
+				assert.Zero(t, srv.calendarCalls, "with sync disabled the calendar must not be called")
+			}
+		})
+	}
+}
+
+func TestIsRecurringCalendarMeeting(t *testing.T) {
+	now := time.Now()
+	cases := []struct {
+		name                 string
+		lastRecurringMatchAt time.Time
+		want                 bool
+	}{
+		{"never matched", time.Time{}, false},
+		{"matched yesterday", now.Add(-24 * time.Hour), true},
+		{"next occurrence matched early", now.Add(10 * time.Minute), true},
+		{"just inside the window", now.Add(-recurringMatchWindow + time.Hour), true},
+		{"outside the window", now.Add(-recurringMatchWindow - time.Hour), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, isRecurringCalendarMeeting(&kvstore.Subscription{LastRecurringMatchAt: tc.lastRecurringMatchAt}))
+		})
+	}
 }

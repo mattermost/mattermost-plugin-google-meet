@@ -45,6 +45,20 @@ type Subscription struct {
 	// for it, so repeat conference records within the same instance (e.g. a drop and rejoin)
 	// reuse the post instead of creating a duplicate.
 	EventPostBindings []EventPostBinding `json:"event_post_bindings,omitempty"`
+	// LastRecurringMatchAt is the scheduled start of the latest conference matched to an
+	// occurrence of a recurring calendar event. While recent, the subscription is treated as a
+	// recurring calendar meeting: only calendar occurrences can announce a conference on it.
+	LastRecurringMatchAt time.Time `json:"last_recurring_match_at,omitzero"`
+	// PendingConferences are conferences on a recurring calendar meeting whose calendar lookup
+	// failed and is being retried before deciding whether they can be announced.
+	PendingConferences []PendingConference `json:"pending_conferences,omitempty"`
+}
+
+// PendingConference is a conference awaiting a successful calendar lookup.
+type PendingConference struct {
+	ConferenceName  string    `json:"conference_name"`
+	ConferenceStart time.Time `json:"conference_start"`
+	FirstSeenAt     time.Time `json:"first_seen_at"`
 }
 
 // ScheduledAnnouncement is a conference-started post waiting for its calendar event's
@@ -85,8 +99,9 @@ type ConferencePostState struct {
 	PostedTranscriptIDs []string `json:"posted_transcript_ids"`
 	PostedSmartNoteIDs  []string `json:"posted_smart_note_ids"`
 	MeetingEndedPosted  bool     `json:"meeting_ended_posted,omitempty"`
-	// Suppressed marks a conference that was recognized but not announced because it started
-	// within the cooldown window of the previous conference ending on the same space.
+	// Suppressed marks a conference that was recognized but not announced, either because it
+	// started within the cooldown window of the previous conference ending on the same space or
+	// because it didn't match any occurrence of the space's recurring calendar meeting.
 	Suppressed bool `json:"suppressed,omitempty"`
 }
 
