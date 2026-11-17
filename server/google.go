@@ -309,13 +309,35 @@ type meetSmartNote struct {
 }
 
 type transcriptEntry struct {
-	Name              string `json:"name"`
-	ParticipantDevice struct {
-		DisplayName string `json:"displayName"`
-	} `json:"participantDevice"`
-	Text      string    `json:"text"`
-	StartTime time.Time `json:"startTime"`
-	EndTime   time.Time `json:"endTime"`
+	Name string `json:"name"`
+	// Participant is the speaker's resource name (conferenceRecords/{record}/participants/{id}).
+	// The entry carries no display name; that lives on the Participant resource.
+	Participant string    `json:"participant"`
+	Text        string    `json:"text"`
+	StartTime   time.Time `json:"startTime"`
+	EndTime     time.Time `json:"endTime"`
+}
+
+type participantUser struct {
+	DisplayName string `json:"displayName"`
+}
+
+// meetParticipant sets exactly one of SignedinUser, AnonymousUser or PhoneUser, depending on how
+// the participant joined.
+type meetParticipant struct {
+	Name          string           `json:"name"`
+	SignedinUser  *participantUser `json:"signedinUser,omitempty"`
+	AnonymousUser *participantUser `json:"anonymousUser,omitempty"`
+	PhoneUser     *participantUser `json:"phoneUser,omitempty"`
+}
+
+func (mp *meetParticipant) displayName() string {
+	for _, u := range []*participantUser{mp.SignedinUser, mp.AnonymousUser, mp.PhoneUser} {
+		if u != nil && strings.TrimSpace(u.DisplayName) != "" {
+			return strings.TrimSpace(u.DisplayName)
+		}
+	}
+	return ""
 }
 
 // meetAPIState enumerates artifact lifecycle states used by the Meet API.
@@ -578,6 +600,20 @@ func (p *Plugin) listSmartNotes(token *kvstore.OAuth2Token, conferenceRecordName
 		pageToken = resp.NextPageToken
 	}
 	return all, nil
+}
+
+// getParticipant fetches a conference participant by its resource name
+// (e.g. "conferenceRecords/abc/participants/xyz").
+func (p *Plugin) getParticipant(token *kvstore.OAuth2Token, name string) (*meetParticipant, error) {
+	body, err := p.meetGet(token, "/"+name)
+	if err != nil {
+		return nil, err
+	}
+	var participant meetParticipant
+	if err := json.Unmarshal(body, &participant); err != nil {
+		return nil, fmt.Errorf("failed to parse participant: %w", err)
+	}
+	return &participant, nil
 }
 
 // listTranscriptEntries returns all transcript entries for the given transcript resource name.

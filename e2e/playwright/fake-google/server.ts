@@ -70,6 +70,8 @@ type Space = {name: string; meetingCode: string; meetingUri: string; owner: stri
 type ConferenceRecord = {name: string; space: string; startTime: string; endTime?: string};
 type Artifact = {name: string; state: string; startTime: string; endTime?: string; exportUri?: string; resource: string};
 type TranscriptEntry = {name: string; participant: string; text: string; languageCode: string; startTime: string; endTime: string};
+type ParticipantKind = 'signedinUser' | 'anonymousUser' | 'phoneUser';
+type Participant = {name: string; kind: ParticipantKind; displayName: string; earliestStartTime: string};
 type CalendarEvent = {id: string; status: string; summary: string; start: Json; end: Json; conferenceId?: string};
 type Failure = {methodId: string; status: number; reason?: string};
 type LoggedRequest = {method: string; host: string; path: string; query: string; status: number; user?: string; methodId?: string};
@@ -83,6 +85,7 @@ const state = {
     transcripts: new Map<string, Artifact[]>(),
     smartNotes: new Map<string, Artifact[]>(),
     entries: new Map<string, TranscriptEntry[]>(),
+    participants: new Map<string, Participant>(),
     events: new Map<string, CalendarEvent[]>(),
     codes: new Map<string, {user: string; scope: string; redirectUri: string; offline: boolean; forceConsent: boolean}>(),
     // Every token belongs to a grant (one consent); revoking the grant revokes all its tokens.
@@ -113,6 +116,7 @@ function reset(keepViolations = false) {
     state.transcripts.clear();
     state.smartNotes.clear();
     state.entries.clear();
+    state.participants.clear();
     state.events.clear();
     state.codes.clear();
     state.accessTokens.clear();
@@ -342,6 +346,7 @@ const METHOD_SCOPES: Record<string, string[]> = {
     'meet.spaces.get': [SCOPES.created, SCOPES.readonly],
     'meet.conferenceRecords.list': [SCOPES.created, SCOPES.readonly],
     'meet.conferenceRecords.get': [SCOPES.created, SCOPES.readonly],
+    'meet.conferenceRecords.participants.get': [SCOPES.created, SCOPES.readonly],
     'meet.conferenceRecords.recordings.list': [SCOPES.created, SCOPES.readonly],
     'meet.conferenceRecords.transcripts.list': [SCOPES.created, SCOPES.readonly],
     'meet.conferenceRecords.transcripts.entries.list': [SCOPES.created, SCOPES.readonly],
@@ -373,6 +378,12 @@ function renderConference(c: ConferenceRecord) {
     // Google sets expireTime (30 days after the end) only once the conference has ended.
     const ended = c.endTime ? {endTime: c.endTime, expireTime: new Date(Date.parse(c.endTime) + 30 * 24 * 3600 * 1000).toISOString()} : {};
     return {name: c.name, space: c.space, startTime: c.startTime, ...ended};
+}
+
+// Exactly one of signedinUser, anonymousUser and phoneUser is set; only a signed-in user has `user`.
+function renderParticipant(p: Participant) {
+    const user = p.kind === 'signedinUser' ? {user: `users/${p.name.split('/').pop()}`, displayName: p.displayName} : {displayName: p.displayName};
+    return {name: p.name, earliestStartTime: p.earliestStartTime, [p.kind]: user};
 }
 
 function renderArtifact(a: Artifact, destination: 'driveDestination' | 'docsDestination') {
@@ -503,6 +514,10 @@ function route(match: MethodMatch, user: User, scopes: Set<string>, query: URLSe
     case 'meet.conferenceRecords.get': {
         const record = conference(p.conferenceRecordsId);
         return record ? {status: 200, body: renderConference(record)} : notFound();
+    }
+    case 'meet.conferenceRecords.participants.get': {
+        const participant = conference(p.conferenceRecordsId) && state.participants.get(`conferenceRecords/${p.conferenceRecordsId}/participants/${p.participantsId}`);
+        return participant ? {status: 200, body: renderParticipant(participant)} : notFound();
     }
     case 'meet.conferenceRecords.recordings.list':
         return artifactList(state.recordings, 'recordings', 'driveDestination');
@@ -651,7 +666,9 @@ function control(method: string, segments: string[], body: Json): Result {
     }
     if (section === 'artifacts' && method === 'POST') {
         // A recording, transcript or smart note of a conference, or a state change of an existing
-        // one (same name). Transcripts take `entries` [{text, speaker?}].
+        // one (same name). Transcripts take `entries` [{text, speaker?, speakerName?, speakerKind?}]:
+        // `speaker` is the participant ID (p1 by default), created on first use as a signedinUser
+        // (or `speakerKind`) named `speakerName` (or "Participant <id>").
         const record = state.conferences.get(body.conference);
         const store = {recording: state.recordings, transcript: state.transcripts, smartNote: state.smartNotes}[body.kind as string];
         if (!record || !store) {
@@ -680,9 +697,17 @@ function control(method: string, segments: string[], body: Json): Result {
         }
         if (body.kind === 'transcript' && Array.isArray(body.entries)) {
             const start = Date.parse(record.startTime);
+            const participantOf = (e: Json) => {
+                const id = e.speaker ?? 'p1';
+                const name = `${record.name}/participants/${id}`;
+                if (!state.participants.has(name)) {
+                    state.participants.set(name, {name, kind: e.speakerKind ?? 'signedinUser', displayName: e.speakerName ?? `Participant ${id}`, earliestStartTime: record.startTime});
+                }
+                return name;
+            };
             state.entries.set(artifact.name, body.entries.map((e: Json, i: number) => ({
                 name: `${artifact!.name}/entries/${i + 1}`,
-                participant: `${record.name}/participants/${e.speaker ?? 'p1'}`,
+                participant: participantOf(e),
                 text: e.text,
                 languageCode: 'en-US',
                 startTime: new Date(start + i * 5000).toISOString(),

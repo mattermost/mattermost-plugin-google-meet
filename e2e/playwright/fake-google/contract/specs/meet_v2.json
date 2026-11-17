@@ -34,6 +34,18 @@
       },
       "response": "ListConferenceRecordsResponse"
     },
+    "meet.conferenceRecords.participants.get": {
+      "httpMethod": "GET",
+      "path": "/v2/conferenceRecords/{conferenceRecordsId}/participants/{participantsId}",
+      "parameters": {
+        "name": {
+          "type": "string",
+          "location": "path",
+          "required": true
+        }
+      },
+      "response": "Participant"
+    },
     "meet.conferenceRecords.recordings.list": {
       "httpMethod": "GET",
       "path": "/v2/conferenceRecords/{conferenceRecordsId}/recordings",
@@ -139,6 +151,15 @@
     }
   },
   "schemas": {
+    "AnonymousUser": {
+      "type": "object",
+      "properties": {
+        "displayName": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
     "ConferenceRecord": {
       "type": "object",
       "properties": {
@@ -262,6 +283,41 @@
       },
       "additionalProperties": false
     },
+    "Participant": {
+      "type": "object",
+      "properties": {
+        "anonymousUser": {
+          "$ref": "AnonymousUser"
+        },
+        "earliestStartTime": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "latestEndTime": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "name": {
+          "type": "string"
+        },
+        "phoneUser": {
+          "$ref": "PhoneUser"
+        },
+        "signedinUser": {
+          "$ref": "SignedinUser"
+        }
+      },
+      "additionalProperties": false
+    },
+    "PhoneUser": {
+      "type": "object",
+      "properties": {
+        "displayName": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
     "Recording": {
       "type": "object",
       "properties": {
@@ -287,6 +343,18 @@
             "ENDED",
             "FILE_GENERATED"
           ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "SignedinUser": {
+      "type": "object",
+      "properties": {
+        "displayName": {
+          "type": "string"
+        },
+        "user": {
+          "type": "string"
         }
       },
       "additionalProperties": false

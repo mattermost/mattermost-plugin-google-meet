@@ -6,6 +6,7 @@
 import {Client4} from '@mattermost/client';
 import type {Post} from '@mattermost/types/posts';
 
+import {fakeGoogle, waitUntilQuiet} from './fake_google';
 import {PLUGIN_ID} from './meet_plugin';
 
 export const pluginApiPath = `/plugins/${PLUGIN_ID}/api/v1`;
@@ -53,6 +54,21 @@ export async function recentPosts(client: Client4, channelId: string): Promise<P
     return list.order.map((id) => list.posts[id]);
 }
 
+/** The replies in a thread, oldest first. */
+export async function threadReplies(client: Client4, rootId: string): Promise<Post[]> {
+    const thread = await client.getPostThread(rootId);
+    return thread.order.map((id) => thread.posts[id]).filter((p) => p.id !== rootId).sort((a, b) => a.create_at - b.create_at);
+}
+
+/** An uploaded file's content, as text. */
+export async function fileText(client: Client4, fileId: string): Promise<string> {
+    const response = await fetch(`${client.getUrl()}/api/v4/files/${fileId}`, {headers: {Authorization: `Bearer ${client.getToken()}`}});
+    if (!response.ok) {
+        throw new Error(`Downloading file ${fileId} failed: ${response.status}`);
+    }
+    return response.text();
+}
+
 /** Creates a private channel in `teamId` with the given members. */
 export async function createPrivateChannel(adminClient: Client4, teamId: string, memberIds: string[]) {
     const suffix = Math.random().toString(36).slice(2, 8);
@@ -61,4 +77,25 @@ export async function createPrivateChannel(adminClient: Client4, teamId: string,
         await adminClient.addToChannel(userId, channel.id);
     }
     return channel;
+}
+
+/**
+ * Runs one poll cycle and waits for it to finish. POST /admin/poll-now starts the cycle on a
+ * goroutine (server/api.go), so this waits for the cycle's first Google call and then until the
+ * fake has been quiet for a second. Needs something to poll: a subscription or an ad-hoc meeting.
+ */
+export async function runPollCycle(adminClient: Client4) {
+    const before = (await fakeGoogle.requests()).length;
+    const {status, json} = await pluginRequest(adminClient, 'POST', '/admin/poll-now');
+    if (status !== 200 || json?.status !== 'poll triggered') {
+        throw new Error(`poll-now did not start a cycle: ${status} ${JSON.stringify(json)}`);
+    }
+    const deadline = Date.now() + 10_000;
+    while ((await fakeGoogle.requests()).length === before) {
+        if (Date.now() > deadline) {
+            throw new Error('The poll cycle made no Google call within 10s. Is there a subscription or an ad-hoc meeting to poll?');
+        }
+        await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    await waitUntilQuiet();
 }
