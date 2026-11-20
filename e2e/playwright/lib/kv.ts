@@ -46,7 +46,7 @@ export async function kvSet(key: string, value: Buffer) {
 export const tokenKey = (mmUserId: string) => `oauth_token_${mmUserId}`;
 
 /** The token as the plugin stores it (server/store/kvstore/kvstore.go OAuth2Token). */
-export type StoredToken = {access_token: string; token_type: string; refresh_token: string; expiry: string};
+export type StoredToken = {access_token: string; token_type: string; refresh_token: string; expiry: string; scope?: string};
 
 /**
  * Connects the Mattermost user to a fake Google account without the OAuth flow: the fake issues a
@@ -58,7 +58,7 @@ export async function connectUser(
     options: {user?: FakeGoogleUserKey; scopes?: string[]; expiresInSeconds?: number} = {},
 ): Promise<FakeToken> {
     const token = await fakeGoogle.issueToken(options);
-    await seedToken(mmUserId, {access_token: token.access_token, token_type: token.token_type, refresh_token: token.refresh_token, expiry: token.expiry});
+    await seedToken(mmUserId, {access_token: token.access_token, token_type: token.token_type, refresh_token: token.refresh_token, expiry: token.expiry, scope: token.scope});
     return token;
 }
 

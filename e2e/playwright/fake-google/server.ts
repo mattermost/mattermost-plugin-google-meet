@@ -2,7 +2,7 @@
 // See LICENSE.txt for license information.
 
 // A small fake of the Google APIs the Meet plugin calls: OAuth (accounts.google.com consent and
-// oauth2.googleapis.com/token), the Meet REST API v2 (meet.googleapis.com) and Calendar API v3
+// oauth2.googleapis.com/token and /tokeninfo), the Meet REST API v2 (meet.googleapis.com) and Calendar API v3
 // events.list (www.googleapis.com). The proxy, TLS, OAuth and contract plumbing is adapted from
 // mattermost-plugin-google-drive e2e/playwright/fake-google/server.ts.
 //
@@ -324,6 +324,23 @@ function tokenEndpoint(form: URLSearchParams, authorization: string): Result {
         violation(`token response (${grantType}): missing ${missing}${why}`);
     }
     return {status: 200, body};
+}
+
+// The plugin calls tokeninfo once per stored token that has no scope, to backfill it.
+function tokenInfo(query: URLSearchParams): Result {
+    const token = state.accessTokens.get(query.get('access_token') ?? '');
+    if (!token || token.expiresAt < Date.now()) {
+        return {status: 400, body: {error: 'invalid_token', error_description: 'Invalid Value'}};
+    }
+    const expiresIn = Math.floor((token.expiresAt - Date.now()) / 1000);
+    return {status: 200, body: {
+        azp: CLIENT_ID,
+        aud: CLIENT_ID,
+        scope: token.scope,
+        exp: String(Math.floor(token.expiresAt / 1000)),
+        expires_in: String(expiresIn),
+        access_type: 'offline',
+    }};
 }
 
 function authenticate(authorization: string): {user: User; scopes: Set<string>} | null {
@@ -793,6 +810,8 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse) {
             const form = new URLSearchParams(raw.toString());
             log.methodId = form.get('grant_type') ?? undefined;
             result = tokenEndpoint(form, req.headers.authorization ?? '');
+        } else if (url.pathname === '/tokeninfo' && method === 'GET') {
+            result = tokenInfo(url.searchParams);
         } else {
             result = api(method, url, raw, req.headers.authorization ?? '', log);
         }
@@ -841,7 +860,7 @@ function api(method: string, url: URL, raw: Buffer, authorization: string, log: 
     return result;
 }
 
-const OAUTH_HOSTS: Record<string, string> = {'/o/oauth2/v2/auth': 'accounts.google.com', '/o/oauth2/consent': 'accounts.google.com', '/token': 'oauth2.googleapis.com'};
+const OAUTH_HOSTS: Record<string, string> = {'/o/oauth2/v2/auth': 'accounts.google.com', '/o/oauth2/consent': 'accounts.google.com', '/token': 'oauth2.googleapis.com', '/tokeninfo': 'oauth2.googleapis.com'};
 
 // The host each API in contract/specs answers on.
 const API_HOSTS: Record<string, string> = {meet_v2: 'meet.googleapis.com', calendar_v3: 'www.googleapis.com'};

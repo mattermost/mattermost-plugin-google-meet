@@ -35,6 +35,9 @@ type Plugin struct {
 
 	configurationLock sync.RWMutex
 	configuration     *configuration
+
+	// scopeLookupRetryAt maps user IDs to the time a failed tokeninfo lookup may be retried.
+	scopeLookupRetryAt sync.Map
 }
 
 func (p *Plugin) OnActivate() error {

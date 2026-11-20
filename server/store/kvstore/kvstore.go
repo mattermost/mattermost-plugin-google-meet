@@ -20,6 +20,9 @@ type OAuth2Token struct {
 	TokenType    string    `json:"token_type"`
 	RefreshToken string    `json:"refresh_token"`
 	Expiry       time.Time `json:"expiry"`
+	// Scope is the space-delimited list of granted scopes. Empty for tokens stored before
+	// scopes were persisted.
+	Scope string `json:"scope,omitempty"`
 }
 
 // Subscription represents a channel subscription to a Google Meet space.
@@ -115,6 +118,7 @@ type KVStore interface {
 	StoreOAuth2Token(userID string, token *OAuth2Token) error
 	GetOAuth2Token(userID string) (*OAuth2Token, error)
 	DeleteOAuth2Token(userID string) error
+	SetOAuth2TokenScope(userID, accessToken, scope string) (bool, error)
 	StoreOAuth2State(state string, userID string) error
 	GetAndDeleteOAuth2State(state string) (string, error)
 
