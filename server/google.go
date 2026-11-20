@@ -4,6 +4,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -31,10 +32,15 @@ const (
 	googleAuthURL      = "https://accounts.google.com/o/oauth2/v2/auth"
 	tokenRefreshBuffer = 5 * time.Minute
 
-	// meetScopeCreated grants creating meeting spaces; sufficient for /meet start.
+	// The scope backfill is best-effort, so it must not stall the poll cycle when Google is slow.
+	scopeLookupTimeout    = 5 * time.Second
+	scopeLookupRetryDelay = 15 * time.Minute
+
+	// meetScopeCreated grants creating meeting spaces, and reading spaces, conferenceRecords and
+	// their artifacts for spaces this app created.
 	meetScopeCreated = "https://www.googleapis.com/auth/meetings.space.created"
-	// meetScopeReadonly grants reading conferenceRecords, recordings, transcripts, and smart notes.
-	// Only requested when conference artifact polling is enabled.
+	// meetScopeReadonly grants reading spaces, conferenceRecords, recordings, transcripts, and smart
+	// notes for any space the user can access. Only requested when conference artifact polling is enabled.
 	meetScopeReadonly = "https://www.googleapis.com/auth/meetings.space.readonly"
 	// calendarScopeEventsReadonly grants reading calendar events so the poller can anchor
 	// conference-started posts to the organizer's scheduled start time. Only requested when
@@ -133,6 +139,15 @@ func tokenHasScopes(token *kvstore.OAuth2Token, required ...string) bool {
 		return true
 	}
 	return len(missingScopes(token.Scope, required)) == 0
+}
+
+// tokenHasAnyScope reports whether the token was granted at least one of the given scopes, with
+// unknown scopes treated as sufficient like tokenHasScopes.
+func tokenHasAnyScope(token *kvstore.OAuth2Token, scopes ...string) bool {
+	if token.Scope == "" {
+		return true
+	}
+	return len(missingScopes(token.Scope, scopes)) < len(scopes)
 }
 
 type tokenResponse struct {
@@ -285,22 +300,39 @@ func (p *Plugin) ensureTokenScope(store kvstore.KVStore, userID string, token *k
 	if token.Scope != "" {
 		return
 	}
-
-	scope, err := p.fetchTokenScope(token)
-	if err != nil {
-		p.API.LogWarn("Failed to look up granted OAuth scopes", "user_id", userID, "error", err.Error())
+	if retryAt, ok := p.scopeLookupRetryAt.Load(userID); ok && time.Now().Before(retryAt.(time.Time)) {
 		return
 	}
 
+	scope, err := p.fetchTokenScope(token)
+	if err != nil {
+		p.scopeLookupRetryAt.Store(userID, time.Now().Add(scopeLookupRetryDelay))
+		p.API.LogWarn("Failed to look up granted OAuth scopes", "user_id", userID, "error", err.Error())
+		return
+	}
+	p.scopeLookupRetryAt.Delete(userID)
+
 	token.Scope = scope
-	if err := store.StoreOAuth2Token(userID, token); err != nil {
+	saved, err := store.SetOAuth2TokenScope(userID, token.AccessToken, scope)
+	if err != nil {
 		p.API.LogWarn("Failed to store token with backfilled scopes", "user_id", userID, "error", err.Error())
+		return
+	}
+	if !saved {
+		p.API.LogDebug("Skipped scope backfill: token changed during lookup", "user_id", userID)
 	}
 }
 
 func (p *Plugin) fetchTokenScope(token *kvstore.OAuth2Token) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), scopeLookupTimeout)
+	defer cancel()
+
 	reqURL := googleTokenInfoURL + "?" + url.Values{"access_token": {token.AccessToken}}.Encode()
-	resp, err := httpClient.Get(reqURL)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
+	if err != nil {
+		return "", errors.New("failed to build tokeninfo request")
+	}
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		// url.Error embeds the request URL, which carries the access token.
 		var urlErr *url.Error

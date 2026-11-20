@@ -331,6 +331,25 @@ func TestTokenHasScopes(t *testing.T) {
 	}
 }
 
+func TestTokenHasAnyScope(t *testing.T) {
+	cases := []struct {
+		name  string
+		scope string
+		want  bool
+	}{
+		{"unknown scope is treated as sufficient", "", true},
+		{"first scope granted", meetScopeReadonly, true},
+		{"second scope granted", meetScopeCreated + " " + calendarScopeEventsReadonly, true},
+		{"neither granted", calendarScopeEventsReadonly, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			token := &kvstore.OAuth2Token{Scope: tc.scope}
+			assert.Equal(t, tc.want, tokenHasAnyScope(token, meetScopeReadonly, meetScopeCreated))
+		})
+	}
+}
+
 func overrideTokenInfo(t *testing.T, handler http.HandlerFunc) *int {
 	t.Helper()
 	calls := 0
@@ -400,6 +419,49 @@ func TestGetValidToken_TokenInfoFailureIsNonFatal(t *testing.T) {
 	require.NotNil(t, token)
 	assert.Empty(t, token.Scope)
 	assert.Empty(t, kv.tokens["user1"].Scope)
+}
+
+func TestGetValidToken_TokenInfoFailureBacksOff(t *testing.T) {
+	calls := overrideTokenInfo(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	})
+
+	p, _, kv := setupPlugin(t)
+	kv.tokens["user1"] = &kvstore.OAuth2Token{AccessToken: "legacy-access", Expiry: time.Now().Add(time.Hour)}
+
+	for range 3 {
+		_, err := p.getValidToken("user1")
+		require.NoError(t, err)
+	}
+	assert.Equal(t, 1, *calls, "failed lookups should not be retried until the backoff expires")
+
+	p.scopeLookupRetryAt.Store("user1", time.Now().Add(-time.Second))
+	_, err := p.getValidToken("user1")
+	require.NoError(t, err)
+	assert.Equal(t, 2, *calls, "lookup should be retried once the backoff expires")
+}
+
+func TestGetValidToken_BackfillDoesNotOverwriteNewerToken(t *testing.T) {
+	var kv *mockKVStore
+	overrideTokenInfo(t, func(w http.ResponseWriter, _ *http.Request) {
+		// The user reconnects while the lookup is in flight.
+		kv.tokens["user1"] = &kvstore.OAuth2Token{AccessToken: "new-access", Expiry: time.Now().Add(time.Hour), Scope: meetScopeCreated + " " + meetScopeReadonly}
+		w.WriteHeader(http.StatusOK)
+		_, err := w.Write([]byte(`{"scope":"` + meetScopeCreated + `"}`))
+		require.NoError(t, err)
+	})
+
+	var p *Plugin
+	p, _, kv = setupPlugin(t)
+	kv.tokens["user1"] = &kvstore.OAuth2Token{AccessToken: "legacy-access", Expiry: time.Now().Add(time.Hour)}
+
+	token, err := p.getValidToken("user1")
+	require.NoError(t, err)
+	assert.Equal(t, meetScopeCreated, token.Scope)
+
+	stored := kv.tokens["user1"]
+	assert.Equal(t, "new-access", stored.AccessToken)
+	assert.Equal(t, meetScopeCreated+" "+meetScopeReadonly, stored.Scope)
 }
 
 func TestFetchTokenScope_RequestErrorOmitsAccessToken(t *testing.T) {

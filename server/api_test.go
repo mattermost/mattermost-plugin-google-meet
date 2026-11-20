@@ -191,6 +191,20 @@ func (m *mockKVStore) DeleteOAuth2Token(userID string) error {
 	return nil
 }
 
+func (m *mockKVStore) SetOAuth2TokenScope(userID, accessToken, scope string) (bool, error) {
+	if m.err != nil {
+		return false, m.err
+	}
+	stored := m.tokens[userID]
+	if stored == nil || stored.AccessToken != accessToken {
+		return false, nil
+	}
+	updated := *stored
+	updated.Scope = scope
+	m.tokens[userID] = &updated
+	return true, nil
+}
+
 func (m *mockKVStore) StoreOAuth2State(state string, userID string) error {
 	if m.err != nil {
 		return m.err

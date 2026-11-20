@@ -118,6 +118,7 @@ type KVStore interface {
 	StoreOAuth2Token(userID string, token *OAuth2Token) error
 	GetOAuth2Token(userID string) (*OAuth2Token, error)
 	DeleteOAuth2Token(userID string) error
+	SetOAuth2TokenScope(userID, accessToken, scope string) (bool, error)
 	StoreOAuth2State(state string, userID string) error
 	GetAndDeleteOAuth2State(state string) (string, error)
 

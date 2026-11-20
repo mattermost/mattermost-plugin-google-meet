@@ -129,7 +129,7 @@ func (p *Plugin) pollSubscription(store kvstore.KVStore, sub *kvstore.Subscripti
 		p.API.LogDebug("Skipping subscription poll: user is not connected to Google", "space_id", sub.SpaceID, "created_by", sub.CreatedBy)
 		return
 	}
-	if !tokenHasScopes(token, meetScopeReadonly) {
+	if !tokenHasAnyScope(token, meetScopeReadonly, meetScopeCreated) {
 		p.API.LogWarn("Skipping subscription poll: subscription creator must reconnect their Google account to grant meeting read access", "space_id", sub.SpaceID, "created_by", sub.CreatedBy)
 		return
 	}
@@ -781,7 +781,7 @@ func (p *Plugin) pollAdHocMeetings(store kvstore.KVStore) {
 			p.API.LogDebug("Skipping ad-hoc poll: user is not connected to Google", "space_id", spaceID, "user_id", entry.UserID)
 			continue
 		}
-		if !tokenHasScopes(token, meetScopeReadonly) {
+		if !tokenHasAnyScope(token, meetScopeReadonly, meetScopeCreated) {
 			p.API.LogWarn("Skipping ad-hoc poll: meeting creator must reconnect their Google account to grant meeting read access", "space_id", spaceID, "user_id", entry.UserID)
 			continue
 		}

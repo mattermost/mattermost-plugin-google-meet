@@ -106,6 +106,51 @@ func (kv *Client) GetOAuth2Token(userID string) (*OAuth2Token, error) {
 	return &token, nil
 }
 
+// SetOAuth2TokenScope records the granted scope on the stored token, but only if it is still the
+// token identified by accessToken. Returns false when the token was replaced or removed meanwhile.
+func (kv *Client) SetOAuth2TokenScope(userID, accessToken, scope string) (bool, error) {
+	if err := kv.requireEncryptionKey(); err != nil {
+		return false, err
+	}
+
+	key := oauthTokenPrefix + userID
+	var encrypted []byte
+	if err := kv.client.KV.Get(key, &encrypted); err != nil {
+		return false, errors.Wrap(err, "failed to get token")
+	}
+	if len(encrypted) == 0 {
+		return false, nil
+	}
+
+	data, err := decrypt(encrypted, kv.encryptionKey)
+	if err != nil {
+		return false, errors.Wrap(err, "failed to decrypt token")
+	}
+	var token OAuth2Token
+	if err = json.Unmarshal(data, &token); err != nil {
+		return false, errors.Wrap(err, "failed to unmarshal token")
+	}
+	if token.AccessToken != accessToken {
+		return false, nil
+	}
+
+	token.Scope = scope
+	updated, err := json.Marshal(&token)
+	if err != nil {
+		return false, errors.Wrap(err, "failed to marshal token")
+	}
+	updatedEncrypted, err := encrypt(updated, kv.encryptionKey)
+	if err != nil {
+		return false, errors.Wrap(err, "failed to encrypt token")
+	}
+
+	saved, err := kv.client.KV.Set(key, updatedEncrypted, pluginapi.SetAtomic(encrypted))
+	if err != nil {
+		return false, errors.Wrap(err, "failed to store token")
+	}
+	return saved, nil
+}
+
 func (kv *Client) DeleteOAuth2Token(userID string) error {
 	err := kv.client.KV.Delete(oauthTokenPrefix + userID)
 	if err != nil {
