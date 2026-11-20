@@ -110,7 +110,7 @@ test.describe('choose the Google account index for Meet links', {tag: '@contract
         await slashCommand.run('config', 'authuser', 'work');
         await slashCommand.run('config', 'authuser', 'alice@');
 
-        // * Verify both are rejected
+        // * Verify all three are rejected
         await expect(posts.postsWithText('The authuser value must be a non-negative whole number or an email address.')).toHaveCount(3);
 
         // # Run /meet config with an unknown setting

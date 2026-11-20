@@ -200,9 +200,8 @@ func (c *Handler) executeConfigCommand(args *model.CommandArgs, subFields []stri
 		return c.ephemeral("Usage: `/meet config authuser <number|email>`.")
 	}
 
-	authUser := strings.TrimSpace(subFields[1])
-	isIndex := isAccountIndex(authUser)
-	if !isIndex && !model.IsValidEmail(authUser) {
+	authUser, isIndex, ok := canonicalAuthUser(subFields[1])
+	if !ok {
 		return c.ephemeral("The authuser value must be a non-negative whole number or an email address.")
 	}
 
@@ -219,9 +218,20 @@ func (c *Handler) executeConfigCommand(args *model.CommandArgs, subFields []stri
 	return c.ephemeral(fmt.Sprintf("Google Meet links will now use Google account **%s**.", authUser))
 }
 
-func isAccountIndex(value string) bool {
-	index, err := strconv.Atoi(value)
-	return err == nil && index >= 0
+// canonicalAuthUser returns the value to store: the account index without a sign or leading zeros,
+// or the lowercased email. The email needs a dot in its domain because the webapp drops any other.
+func canonicalAuthUser(value string) (authUser string, isIndex, ok bool) {
+	value = strings.TrimSpace(value)
+	if index, err := strconv.Atoi(value); err == nil && index >= 0 {
+		return strconv.Itoa(index), true, true
+	}
+
+	email := strings.ToLower(value)
+	domain := email[strings.LastIndex(email, "@")+1:]
+	if model.IsValidEmail(email) && strings.Contains(domain, ".") {
+		return email, false, true
+	}
+	return "", false, false
 }
 
 func (c *Handler) executeSubscriptionCommand(args *model.CommandArgs, subFields []string) *model.CommandResponse {

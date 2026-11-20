@@ -381,6 +381,27 @@ func TestConfigCommand_AuthUserEmail(t *testing.T) {
 	assert.Equal(t, "alice@example.com", mock.authUser)
 }
 
+func TestConfigCommand_AuthUserStoresCanonicalValue(t *testing.T) {
+	for _, tc := range []struct{ input, stored, reply string }{
+		{"+1", "1", "account index **1**"},
+		{"007", "7", "account index **7**"},
+		{"Alice@Example.com", "alice@example.com", "Google account **alice@example.com**"},
+	} {
+		t.Run(tc.input, func(t *testing.T) {
+			mock := &mockMeetingStarter{}
+			handler := &Handler{meetingStarter: mock}
+
+			resp, err := handler.Handle(&model.CommandArgs{
+				Command: "/meet config authuser " + tc.input,
+				UserId:  "user1",
+			})
+			require.NoError(t, err)
+			assert.Contains(t, resp.Text, tc.reply)
+			assert.Equal(t, tc.stored, mock.authUser)
+		})
+	}
+}
+
 func TestConfigCommand_InvalidAuthUser(t *testing.T) {
 	for _, commandText := range []string{
 		"/meet config",
@@ -390,6 +411,7 @@ func TestConfigCommand_InvalidAuthUser(t *testing.T) {
 		"/meet config authuser one",
 		"/meet config authuser 1 extra",
 		"/meet config authuser alice@",
+		"/meet config authuser alice@example",
 		"/meet config authuser @example.com",
 		"/meet config authuser Alice <alice@example.com>",
 		"/meet config authuser alice@example.com extra",
