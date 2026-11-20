@@ -1,7 +1,7 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
-import {fakeGoogle} from './lib/fake_google';
+import {fakeGoogle, waitUntilQuiet} from './lib/fake_google';
 
 // The compose stack keeps running after the run (npm run server:down removes it).
 export default async function globalTeardown() {
@@ -17,18 +17,4 @@ export default async function globalTeardown() {
     if (unreported.length > 0) {
         throw new Error(`Fake Google saw traffic outside a test's check that breaks the Google API contract:\n${unreported.join('\n')}`);
     }
-}
-
-async function waitUntilQuiet(quietMs = 1_000, timeoutMs = 15_000) {
-    const deadline = Date.now() + timeoutMs;
-    let seen = (await fakeGoogle.requests()).length;
-    while (Date.now() < deadline) {
-        await new Promise((resolve) => setTimeout(resolve, quietMs));
-        const now = (await fakeGoogle.requests()).length;
-        if (now === seen) {
-            return;
-        }
-        seen = now;
-    }
-    throw new Error(`Fake Google was still receiving requests ${timeoutMs / 1000}s after the last test, so late contract violations could be missed.`);
 }
