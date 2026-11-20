@@ -16,7 +16,7 @@ This plugin adds `/meet` slash commands and a channel header button that let use
 - Start a Google Meet meeting with `/meet start [topic]` or the channel header button.
 - Connect or reconnect a Google account with `/meet connect`.
 - Disconnect a Google account with `/meet disconnect`.
-- Set the Google account index used by Meet links with `/meet config authuser <number>`.
+- Set the Google account (index or email address) used by Meet links with `/meet config authuser <number|email>`.
 - Create meetings as the currently connected Google user.
 - Post a rich Mattermost message with a join link back into the channel.
 - Optionally block meeting creation in public channels.
@@ -50,13 +50,16 @@ After the plugin is configured by a Mattermost administrator:
 
 The created post includes the meeting URL and an obvious join action in the Mattermost UI.
 
-If you use multiple Google accounts in the same browser, set the zero-based account index that Meet links should open:
+If you use multiple Google accounts in the same browser, set the Google account that Meet links should open, either as a zero-based account index or as an email address:
 
 ```text
 /meet config authuser 1
+/meet config authuser alice@example.com
 ```
 
-The account index is saved per Mattermost user. The displayed meeting URL stays unchanged, while its link target includes the `authuser` parameter. Google account ordering can differ between browser profiles.
+An email address is the more stable choice: the account index depends on the order in which accounts were signed in to the browser and can differ between browser profiles, while the email always names the same account.
+
+The value is saved per Mattermost user. The displayed meeting URL stays unchanged, while its link target includes the `authuser` parameter (an email address is URL-encoded, for example `authuser=alice%40example.com`).
 
 `/meet help` shows the available commands.
 

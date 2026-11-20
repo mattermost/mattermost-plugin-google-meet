@@ -89,7 +89,7 @@ test.describe('plugin administration and help', {tag: '@contract-fake'}, () => {
         // * Verify each shows the help, listing every subcommand
         const posts = new MeetPosts(channelsPage);
         await expect(posts.postsWithText('Google Meet commands:')).toHaveCount(3);
-        for (const usage of ['/meet start [topic]', '/meet connect', '/meet disconnect', '/meet config authuser <number>', '/meet subscription add', '/meet subscription remove', '/meet subscription list', '/meet help']) {
+        for (const usage of ['/meet start [topic]', '/meet connect', '/meet disconnect', '/meet config authuser <number|email>', '/meet subscription add', '/meet subscription remove', '/meet subscription list', '/meet help']) {
             await expect(posts.help).toContainText(usage);
         }
     });
