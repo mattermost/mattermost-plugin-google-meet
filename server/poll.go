@@ -129,6 +129,10 @@ func (p *Plugin) pollSubscription(store kvstore.KVStore, sub *kvstore.Subscripti
 		p.API.LogDebug("Skipping subscription poll: user is not connected to Google", "space_id", sub.SpaceID, "created_by", sub.CreatedBy)
 		return
 	}
+	if !tokenHasScopes(token, meetScopeReadonly) {
+		p.API.LogWarn("Skipping subscription poll: subscription creator must reconnect their Google account to grant meeting read access", "space_id", sub.SpaceID, "created_by", sub.CreatedBy)
+		return
+	}
 
 	subChanged := p.processDueScheduledAnnouncements(store, sub, token)
 	if pruneExpiredEventBindings(sub) {
@@ -775,6 +779,10 @@ func (p *Plugin) pollAdHocMeetings(store kvstore.KVStore) {
 		}
 		if token == nil {
 			p.API.LogDebug("Skipping ad-hoc poll: user is not connected to Google", "space_id", spaceID, "user_id", entry.UserID)
+			continue
+		}
+		if !tokenHasScopes(token, meetScopeReadonly) {
+			p.API.LogWarn("Skipping ad-hoc poll: meeting creator must reconnect their Google account to grant meeting read access", "space_id", spaceID, "user_id", entry.UserID)
 			continue
 		}
 

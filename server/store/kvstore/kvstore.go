@@ -20,6 +20,9 @@ type OAuth2Token struct {
 	TokenType    string    `json:"token_type"`
 	RefreshToken string    `json:"refresh_token"`
 	Expiry       time.Time `json:"expiry"`
+	// Scope is the space-delimited list of granted scopes. Empty for tokens stored before
+	// scopes were persisted.
+	Scope string `json:"scope,omitempty"`
 }
 
 // Subscription represents a channel subscription to a Google Meet space.

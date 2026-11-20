@@ -51,14 +51,21 @@ func (p *Plugin) AddSubscription(userID, channelID, meetingCodeOrURL, descriptio
 		return nil, errors.New("user not connected to Google")
 	}
 
+	if !tokenHasScopes(token, mandatoryScopes(p.getConfiguration())...) {
+		p.deleteTokenForReconnect(store, userID)
+		return nil, command.ErrNeedsReconnect
+	}
+
 	meetingCode := extractMeetingCode(meetingCodeOrURL)
 
 	space, err := p.getSpace(token, meetingCode)
 	if err != nil {
 		if errors.Is(err, ErrInsufficientScopes) {
-			if delErr := store.DeleteOAuth2Token(userID); delErr != nil {
-				p.API.LogWarn("Failed to delete token after insufficient scopes", "user_id", userID, "error", delErr.Error())
-			}
+			p.deleteTokenForReconnect(store, userID)
+			return nil, command.ErrNeedsReconnect
+		}
+		// With unknown scopes, a legacy token missing meetings.space.readonly is the likeliest cause.
+		if errors.Is(err, ErrPermissionDenied) && token.Scope == "" {
 			return nil, command.ErrNeedsReconnect
 		}
 		return nil, fmt.Errorf("could not find meeting space %q: %w", meetingCode, err)
@@ -97,6 +104,12 @@ func (p *Plugin) AddSubscription(userID, channelID, meetingCodeOrURL, descriptio
 	}
 
 	return sub, nil
+}
+
+func (p *Plugin) deleteTokenForReconnect(store kvstore.KVStore, userID string) {
+	if err := store.DeleteOAuth2Token(userID); err != nil {
+		p.API.LogWarn("Failed to delete token after insufficient scopes", "user_id", userID, "error", err.Error())
+	}
 }
 
 // RemoveSubscription removes a channel subscription for the given meeting code.

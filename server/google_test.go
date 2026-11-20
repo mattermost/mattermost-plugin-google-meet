@@ -221,6 +221,7 @@ func TestExchangeCodeForToken_Success(t *testing.T) {
 	assert.Equal(t, "Bearer", token.TokenType)
 	assert.Equal(t, "refresh-456", token.RefreshToken)
 	assert.True(t, token.Expiry.After(time.Now()))
+	assert.Equal(t, meetScopeCreated, token.Scope)
 }
 
 func TestExchangeCodeForToken_CalendarScopeOptional(t *testing.T) {
@@ -311,6 +312,126 @@ func TestMissingScopes(t *testing.T) {
 	assert.Equal(t, required, missingScopes("", required))
 }
 
+func TestTokenHasScopes(t *testing.T) {
+	cases := []struct {
+		name     string
+		scope    string
+		required []string
+		want     bool
+	}{
+		{"unknown scope is treated as sufficient", "", []string{meetScopeReadonly}, true},
+		{"all granted", meetScopeCreated + " " + meetScopeReadonly, []string{meetScopeCreated, meetScopeReadonly}, true},
+		{"missing one", meetScopeCreated, []string{meetScopeCreated, meetScopeReadonly}, false},
+		{"nothing required", meetScopeCreated, nil, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, tokenHasScopes(&kvstore.OAuth2Token{Scope: tc.scope}, tc.required...))
+		})
+	}
+}
+
+func overrideTokenInfo(t *testing.T, handler http.HandlerFunc) *int {
+	t.Helper()
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		handler(w, r)
+	}))
+	origURL := googleTokenInfoURL
+	origClient := httpClient
+	googleTokenInfoURL = server.URL
+	httpClient = server.Client()
+	t.Cleanup(func() {
+		googleTokenInfoURL = origURL
+		httpClient = origClient
+		server.Close()
+	})
+	return &calls
+}
+
+func TestGetValidToken_BackfillsMissingScope(t *testing.T) {
+	calls := overrideTokenInfo(t, func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "legacy-access", r.URL.Query().Get("access_token"))
+		w.WriteHeader(http.StatusOK)
+		_, err := w.Write([]byte(`{"scope":"` + meetScopeCreated + `","expires_in":"3500"}`))
+		require.NoError(t, err)
+	})
+
+	p, _, kv := setupPlugin(t)
+	kv.tokens["user1"] = &kvstore.OAuth2Token{AccessToken: "legacy-access", Expiry: time.Now().Add(time.Hour)}
+
+	token, err := p.getValidToken("user1")
+	require.NoError(t, err)
+	assert.Equal(t, meetScopeCreated, token.Scope)
+	assert.Equal(t, meetScopeCreated, kv.tokens["user1"].Scope)
+
+	_, err = p.getValidToken("user1")
+	require.NoError(t, err)
+	assert.Equal(t, 1, *calls, "tokeninfo should only be called once per legacy token")
+}
+
+func TestGetValidToken_SkipsTokenInfoWhenScopeKnown(t *testing.T) {
+	calls := overrideTokenInfo(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	p, _, kv := setupPlugin(t)
+	kv.tokens["user1"] = &kvstore.OAuth2Token{AccessToken: "access", Expiry: time.Now().Add(time.Hour), Scope: meetScopeCreated}
+
+	token, err := p.getValidToken("user1")
+	require.NoError(t, err)
+	assert.Equal(t, meetScopeCreated, token.Scope)
+	assert.Zero(t, *calls)
+}
+
+func TestGetValidToken_TokenInfoFailureIsNonFatal(t *testing.T) {
+	overrideTokenInfo(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, err := w.Write([]byte(`{"error":"invalid_token"}`))
+		require.NoError(t, err)
+	})
+
+	p, _, kv := setupPlugin(t)
+	kv.tokens["user1"] = &kvstore.OAuth2Token{AccessToken: "legacy-access", Expiry: time.Now().Add(time.Hour)}
+
+	token, err := p.getValidToken("user1")
+	require.NoError(t, err)
+	require.NotNil(t, token)
+	assert.Empty(t, token.Scope)
+	assert.Empty(t, kv.tokens["user1"].Scope)
+}
+
+func TestFetchTokenScope_RequestErrorOmitsAccessToken(t *testing.T) {
+	origURL := googleTokenInfoURL
+	googleTokenInfoURL = "http://127.0.0.1:1" // #nosec G101 -- unroutable test address
+	defer func() { googleTokenInfoURL = origURL }()
+
+	p := &Plugin{}
+	_, err := p.fetchTokenScope(&kvstore.OAuth2Token{AccessToken: "secret-access-token"})
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), "secret-access-token")
+}
+
+func TestMeetGet_PermissionDenied(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_, err := w.Write([]byte(`{"error":{"code":403,"status":"PERMISSION_DENIED","details":[{"reason":"PERMISSION_DENIED_ON_RESOURCE"}]}}`))
+		require.NoError(t, err)
+	}))
+	defer server.Close()
+
+	origURL := googleMeetURL
+	origClient := httpClient
+	googleMeetURL = server.URL
+	httpClient = server.Client()
+	defer func() { googleMeetURL = origURL; httpClient = origClient }()
+
+	p := &Plugin{}
+	_, err := p.getSpace(&kvstore.OAuth2Token{AccessToken: "access"}, "abc-mnop-xyz")
+	require.ErrorIs(t, err, ErrPermissionDenied)
+}
+
 func TestExchangeCodeForToken_ErrorResponse(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
@@ -396,12 +517,42 @@ func TestRefreshToken_KeepsExistingRefreshToken(t *testing.T) {
 		TokenType:    "Bearer",
 		RefreshToken: "original-refresh",
 		Expiry:       time.Now().Add(-time.Hour),
+		Scope:        meetScopeCreated,
 	}
 
 	newToken, err := p.refreshToken(oldToken)
 	require.NoError(t, err)
 	assert.Equal(t, "new-access", newToken.AccessToken)
 	assert.Equal(t, "original-refresh", newToken.RefreshToken, "should keep original refresh token when none returned")
+	assert.Equal(t, meetScopeCreated, newToken.Scope, "should keep original scope when none returned")
+}
+
+func TestRefreshToken_UpdatesScope(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		require.NoError(t, json.NewEncoder(w).Encode(tokenResponse{
+			AccessToken: "new-access",
+			ExpiresIn:   3600,
+			Scope:       meetScopeCreated + " " + meetScopeReadonly,
+		}))
+	}))
+	defer server.Close()
+
+	origTokenURL := googleTokenURL
+	origClient := httpClient
+	googleTokenURL = server.URL
+	httpClient = server.Client()
+	defer func() {
+		googleTokenURL = origTokenURL
+		httpClient = origClient
+	}()
+
+	p := &Plugin{}
+	p.setConfiguration(&configuration{GoogleClientID: "client-id", GoogleClientSecret: "client-secret"})
+
+	newToken, err := p.refreshToken(&kvstore.OAuth2Token{RefreshToken: "refresh"})
+	require.NoError(t, err)
+	assert.Equal(t, meetScopeCreated+" "+meetScopeReadonly, newToken.Scope)
 }
 
 func TestRefreshToken_UpdatesRefreshToken(t *testing.T) {

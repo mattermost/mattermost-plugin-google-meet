@@ -23,6 +23,10 @@ var ErrInsufficientScopes = errors.New("insufficient authentication scopes")
 // screen, one or more scopes the plugin cannot function without.
 var ErrMissingMandatoryScopes = errors.New("missing mandatory oauth scopes")
 
+// ErrPermissionDenied indicates Google refused access to a resource. Google returns the same
+// error when the resource doesn't exist, so it can't be told apart from a bad identifier.
+var ErrPermissionDenied = errors.New("permission denied on resource")
+
 const (
 	googleAuthURL      = "https://accounts.google.com/o/oauth2/v2/auth"
 	tokenRefreshBuffer = 5 * time.Minute
@@ -41,9 +45,10 @@ const (
 // These are vars so tests can override them with httptest servers.
 var (
 	// #nosec G101 -- OAuth endpoint URLs are public constants, not credentials.
-	googleTokenURL = "https://oauth2.googleapis.com/token"
-	googleMeetURL  = "https://meet.googleapis.com/v2"
-	httpClient     = &http.Client{Timeout: 30 * time.Second}
+	googleTokenURL     = "https://oauth2.googleapis.com/token"
+	googleTokenInfoURL = "https://oauth2.googleapis.com/tokeninfo" // #nosec G101 -- public endpoint URL
+	googleMeetURL      = "https://meet.googleapis.com/v2"
+	httpClient         = &http.Client{Timeout: 30 * time.Second}
 )
 
 func (p *Plugin) getOAuth2CallbackURL() string {
@@ -121,6 +126,15 @@ func missingScopes(granted string, required []string) []string {
 	return missing
 }
 
+// tokenHasScopes reports whether the token was granted every required scope. A token with
+// unknown scopes is treated as sufficient so callers fall back to handling Google's errors.
+func tokenHasScopes(token *kvstore.OAuth2Token, required ...string) bool {
+	if token.Scope == "" {
+		return true
+	}
+	return len(missingScopes(token.Scope, required)) == 0
+}
+
 type tokenResponse struct {
 	AccessToken  string `json:"access_token"`
 	TokenType    string `json:"token_type"`
@@ -177,6 +191,7 @@ func (p *Plugin) exchangeCodeForToken(code string) (*kvstore.OAuth2Token, error)
 		TokenType:    tokenResp.TokenType,
 		RefreshToken: tokenResp.RefreshToken,
 		Expiry:       time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second),
+		Scope:        tokenResp.Scope,
 	}
 
 	return token, nil
@@ -221,10 +236,14 @@ func (p *Plugin) refreshToken(token *kvstore.OAuth2Token) (*kvstore.OAuth2Token,
 		TokenType:    tokenResp.TokenType,
 		RefreshToken: token.RefreshToken, // keep existing refresh token
 		Expiry:       time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second),
+		Scope:        token.Scope,
 	}
 
 	if tokenResp.RefreshToken != "" {
 		newToken.RefreshToken = tokenResp.RefreshToken
+	}
+	if tokenResp.Scope != "" {
+		newToken.Scope = tokenResp.Scope
 	}
 
 	return newToken, nil
@@ -255,7 +274,65 @@ func (p *Plugin) getValidToken(userID string) (*kvstore.OAuth2Token, error) {
 		}
 	}
 
+	p.ensureTokenScope(store, userID, token)
+
 	return token, nil
+}
+
+// ensureTokenScope backfills the granted scopes of tokens stored before scopes were persisted.
+// Best-effort: on failure the scope stays unknown and callers rely on Google's error responses.
+func (p *Plugin) ensureTokenScope(store kvstore.KVStore, userID string, token *kvstore.OAuth2Token) {
+	if token.Scope != "" {
+		return
+	}
+
+	scope, err := p.fetchTokenScope(token)
+	if err != nil {
+		p.API.LogWarn("Failed to look up granted OAuth scopes", "user_id", userID, "error", err.Error())
+		return
+	}
+
+	token.Scope = scope
+	if err := store.StoreOAuth2Token(userID, token); err != nil {
+		p.API.LogWarn("Failed to store token with backfilled scopes", "user_id", userID, "error", err.Error())
+	}
+}
+
+func (p *Plugin) fetchTokenScope(token *kvstore.OAuth2Token) (string, error) {
+	reqURL := googleTokenInfoURL + "?" + url.Values{"access_token": {token.AccessToken}}.Encode()
+	resp, err := httpClient.Get(reqURL)
+	if err != nil {
+		// url.Error embeds the request URL, which carries the access token.
+		var urlErr *url.Error
+		if errors.As(err, &urlErr) {
+			err = urlErr.Err
+		}
+		return "", fmt.Errorf("tokeninfo request failed: %w", err)
+	}
+	defer func() {
+		if closeErr := resp.Body.Close(); closeErr != nil && p.API != nil {
+			p.API.LogWarn("Failed to close response body", "description", "tokeninfo response", "error", closeErr.Error())
+		}
+	}()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("failed to read tokeninfo response: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("tokeninfo returned status %d: %s", resp.StatusCode, string(body))
+	}
+
+	var info struct {
+		Scope string `json:"scope"`
+	}
+	if err := json.Unmarshal(body, &info); err != nil {
+		return "", fmt.Errorf("failed to parse tokeninfo response: %w", err)
+	}
+	if info.Scope == "" {
+		return "", errors.New("tokeninfo response has no scope")
+	}
+	return info.Scope, nil
 }
 
 // meetSpaceResponse is kept as an alias so existing tests compile.
@@ -394,6 +471,9 @@ func (p *Plugin) meetGet(token *kvstore.OAuth2Token, path string) ([]byte, error
 
 	if resp.StatusCode == http.StatusForbidden && strings.Contains(string(body), "ACCESS_TOKEN_SCOPE_INSUFFICIENT") {
 		return nil, ErrInsufficientScopes
+	}
+	if resp.StatusCode == http.StatusForbidden && strings.Contains(string(body), "PERMISSION_DENIED_ON_RESOURCE") {
+		return nil, fmt.Errorf("%w: %s", ErrPermissionDenied, path)
 	}
 	if resp.StatusCode == http.StatusNotFound {
 		return nil, fmt.Errorf("resource not found: %s", path)

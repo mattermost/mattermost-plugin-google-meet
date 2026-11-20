@@ -634,6 +634,38 @@ func TestPollSubscription_NoTokenSkipped(t *testing.T) {
 	assert.Nil(t, api.post, "no post should be created when token is missing")
 }
 
+func TestPollSkipsTokensMissingReadonlyScope(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	origURL := googleMeetURL
+	origClient := httpClient
+	googleMeetURL = server.URL + "/v2"
+	httpClient = server.Client()
+	defer func() { googleMeetURL = origURL; httpClient = origClient }()
+
+	api := &mockPluginAPI{siteURL: "http://localhost:8065", captureAllPosts: true}
+	kv := newMockKVStore()
+	kv.tokens["user1"] = &kvstore.OAuth2Token{AccessToken: "access", Expiry: time.Now().Add(time.Hour), Scope: meetScopeCreated}
+	require.NoError(t, kv.StoreAdHocMeetingPost("spaces/adhoc1", &kvstore.AdHocMeetingPost{
+		MeetingPostID: "post1",
+		ChannelID:     "chan1",
+		UserID:        "user1",
+	}))
+	require.NoError(t, kv.AddToAdHocIndex("spaces/adhoc1"))
+
+	p := pollTestPlugin(t, api, kv)
+	p.pollSubscription(kv, &kvstore.Subscription{SpaceID: "spaces/abc123", ChannelID: "chan1", CreatedBy: "user1"})
+	p.pollAdHocMeetings(kv)
+
+	assert.Zero(t, calls, "pollers should not call Google with a token lacking meetings.space.readonly")
+	assert.Empty(t, api.allPosts)
+}
+
 // TestPollAdHocMeetings verifies that a transcript posted as a reply to the original
 // /meet start post when the conference record appears for an ad-hoc meeting.
 func TestPollAdHocMeetings_TranscriptPostedAsReply(t *testing.T) {
