@@ -56,7 +56,7 @@ type mockMeetingStarter struct {
 	disconnectedID        string
 	setAuthUserErr        error
 	authUserID            string
-	authUser              int
+	authUser              string
 	startedMeeting        struct {
 		userID     string
 		channelID  string
@@ -94,7 +94,7 @@ func (m *mockMeetingStarter) IsUserAdmin(_ string) (bool, error) {
 	return m.isAdmin, m.adminErr
 }
 
-func (m *mockMeetingStarter) SetAuthUser(userID string, authUser int) error {
+func (m *mockMeetingStarter) SetAuthUser(userID string, authUser string) error {
 	m.authUserID = userID
 	m.authUser = authUser
 	return m.setAuthUserErr
@@ -243,7 +243,7 @@ func TestExecuteMeetCommand_Help(t *testing.T) {
 	assert.Contains(t, resp.Text, "/meet start [topic]")
 	assert.Contains(t, resp.Text, "/meet connect")
 	assert.Contains(t, resp.Text, "/meet disconnect")
-	assert.Contains(t, resp.Text, "/meet config authuser <number>")
+	assert.Contains(t, resp.Text, "/meet config authuser <number|email>")
 	assert.Contains(t, resp.Text, "/meet help")
 	assert.Empty(t, mock.startedMeeting.userID)
 }
@@ -350,7 +350,7 @@ func TestConfigCommand_AuthUserSuccess(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, resp.Text, "account index **1**")
 	assert.Equal(t, "user1", mock.authUserID)
-	assert.Equal(t, 1, mock.authUser)
+	assert.Equal(t, "1", mock.authUser)
 }
 
 func TestConfigCommand_AuthUserZero(t *testing.T) {
@@ -364,7 +364,21 @@ func TestConfigCommand_AuthUserZero(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, resp.Text, "account index **0**")
 	assert.Equal(t, "user1", mock.authUserID)
-	assert.Equal(t, 0, mock.authUser)
+	assert.Equal(t, "0", mock.authUser)
+}
+
+func TestConfigCommand_AuthUserEmail(t *testing.T) {
+	mock := &mockMeetingStarter{}
+	handler := &Handler{meetingStarter: mock}
+
+	resp, err := handler.Handle(&model.CommandArgs{
+		Command: "/meet config authuser alice@example.com",
+		UserId:  "user1",
+	})
+	require.NoError(t, err)
+	assert.Contains(t, resp.Text, "Google account **alice@example.com**")
+	assert.Equal(t, "user1", mock.authUserID)
+	assert.Equal(t, "alice@example.com", mock.authUser)
 }
 
 func TestConfigCommand_InvalidAuthUser(t *testing.T) {
@@ -375,6 +389,10 @@ func TestConfigCommand_InvalidAuthUser(t *testing.T) {
 		"/meet config authuser 1.5",
 		"/meet config authuser one",
 		"/meet config authuser 1 extra",
+		"/meet config authuser alice@",
+		"/meet config authuser @example.com",
+		"/meet config authuser Alice <alice@example.com>",
+		"/meet config authuser alice@example.com extra",
 	} {
 		t.Run(commandText, func(t *testing.T) {
 			mock := &mockMeetingStarter{}
@@ -389,6 +407,17 @@ func TestConfigCommand_InvalidAuthUser(t *testing.T) {
 			assert.Empty(t, mock.authUserID)
 		})
 	}
+}
+
+func TestConfigCommand_InvalidAuthUserMessage(t *testing.T) {
+	handler := &Handler{meetingStarter: &mockMeetingStarter{}}
+
+	resp, err := handler.Handle(&model.CommandArgs{
+		Command: "/meet config authuser alice@",
+		UserId:  "user1",
+	})
+	require.NoError(t, err)
+	assert.Contains(t, resp.Text, "The authuser value must be a non-negative whole number or an email address.")
 }
 
 func TestConfigCommand_UnknownSetting(t *testing.T) {

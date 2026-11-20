@@ -7,11 +7,12 @@ import type {GlobalState} from '@mattermost/types/store';
 
 import {get as getPreference} from 'mattermost-redux/selectors/entities/preferences';
 
+import {isValidAuthUser} from './meet_url';
+
 const authUserPreferenceCategory = `pp_${manifest.id}`;
 const authUserPreferenceName = 'authuser';
-const authUserPattern = /^\d+$/;
 
 export function getAuthUserPreference(state: GlobalState): string {
     const value = getPreference(state, authUserPreferenceCategory, authUserPreferenceName, '');
-    return authUserPattern.test(value) ? value : '';
+    return isValidAuthUser(value) ? value : '';
 }

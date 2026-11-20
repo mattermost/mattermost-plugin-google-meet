@@ -35,7 +35,7 @@ type MeetingStarter interface {
 	IsPluginConfigured() bool
 	IsUserAdmin(userID string) (bool, error)
 	GetPluginConfigureURL() string
-	SetAuthUser(userID string, authUser int) error
+	SetAuthUser(userID string, authUser string) error
 	// AreSubscriptionsEnabled reports whether the conference polling/artifact features
 	// are turned on. When false, /meet subscription commands are refused because the
 	// readonly OAuth scope they rely on is not requested at connect time.
@@ -65,7 +65,7 @@ func NewCommandHandler(client *pluginapi.Client, meetingStarter MeetingStarter) 
 	autocompleteData.AddCommand(model.NewAutocompleteData("help", "", "Show Google Meet command help"))
 
 	configCmd := model.NewAutocompleteData("config", "", "Configure your Google Meet preferences")
-	configCmd.AddCommand(model.NewAutocompleteData("authuser", "<number>", "Set the Google account index used by Meet links"))
+	configCmd.AddCommand(model.NewAutocompleteData("authuser", "<number|email>", "Set the Google account (index or email) used by Meet links"))
 	autocompleteData.AddCommand(configCmd)
 
 	subCmd := model.NewAutocompleteData("subscription", "", "Manage channel subscriptions to Google Meet spaces")
@@ -83,7 +83,7 @@ func NewCommandHandler(client *pluginapi.Client, meetingStarter MeetingStarter) 
 		Trigger:              meetCommandTrigger,
 		AutoComplete:         true,
 		AutoCompleteDesc:     "Google Meet commands",
-		AutoCompleteHint:     "help | start [topic] | connect | disconnect | config authuser <number> | subscription",
+		AutoCompleteHint:     "help | start [topic] | connect | disconnect | config authuser <number|email> | subscription",
 		AutocompleteData:     autocompleteData,
 		AutocompleteIconData: iconData,
 	})
@@ -142,7 +142,7 @@ func (c *Handler) executeMeetHelpCommand() *model.CommandResponse {
 			"- `/meet start [topic]` starts a meeting with an optional topic.",
 			"- `/meet connect` opens the Google account connection flow.",
 			"- `/meet disconnect` removes your saved Google connection.",
-			"- `/meet config authuser <number>` sets the Google account index used when you open Meet links.",
+			"- `/meet config authuser <number|email>` sets the Google account (index or email address) used when you open Meet links.",
 			"- `/meet subscription add <meeting-code-or-URL> [description]` subscribes this channel to a meeting space.",
 			"- `/meet subscription remove <meeting-code-or-URL>` unsubscribes this channel from a meeting space.",
 			"- `/meet subscription list` lists your active subscriptions.",
@@ -189,7 +189,7 @@ func (c *Handler) requireConnected(userID string) *model.CommandResponse {
 
 func (c *Handler) executeConfigCommand(args *model.CommandArgs, subFields []string) *model.CommandResponse {
 	if len(subFields) == 0 {
-		return c.ephemeral("Usage: `/meet config authuser <number>`.")
+		return c.ephemeral("Usage: `/meet config authuser <number|email>`.")
 	}
 
 	if subFields[0] != "authuser" {
@@ -197,12 +197,13 @@ func (c *Handler) executeConfigCommand(args *model.CommandArgs, subFields []stri
 	}
 
 	if len(subFields) != 2 {
-		return c.ephemeral("Usage: `/meet config authuser <number>`.")
+		return c.ephemeral("Usage: `/meet config authuser <number|email>`.")
 	}
 
-	authUser, err := strconv.Atoi(subFields[1])
-	if err != nil || authUser < 0 {
-		return c.ephemeral("The authuser value must be a non-negative whole number.")
+	authUser := strings.TrimSpace(subFields[1])
+	isIndex := isAccountIndex(authUser)
+	if !isIndex && !model.IsValidEmail(authUser) {
+		return c.ephemeral("The authuser value must be a non-negative whole number or an email address.")
 	}
 
 	if err := c.meetingStarter.SetAuthUser(args.UserId, authUser); err != nil {
@@ -212,7 +213,15 @@ func (c *Handler) executeConfigCommand(args *model.CommandArgs, subFields []stri
 		return c.ephemeral("Failed to save your Google account preference. Please try again.")
 	}
 
-	return c.ephemeral(fmt.Sprintf("Google Meet links will now use account index **%d**.", authUser))
+	if isIndex {
+		return c.ephemeral(fmt.Sprintf("Google Meet links will now use account index **%s**.", authUser))
+	}
+	return c.ephemeral(fmt.Sprintf("Google Meet links will now use Google account **%s**.", authUser))
+}
+
+func isAccountIndex(value string) bool {
+	index, err := strconv.Atoi(value)
+	return err == nil && index >= 0
 }
 
 func (c *Handler) executeSubscriptionCommand(args *model.CommandArgs, subFields []string) *model.CommandResponse {

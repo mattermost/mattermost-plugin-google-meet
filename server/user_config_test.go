@@ -31,7 +31,7 @@ func TestSetAuthUser(t *testing.T) {
 	p := &Plugin{}
 	p.API = api
 
-	err := p.SetAuthUser("user1", 1)
+	err := p.SetAuthUser("user1", "1")
 	require.NoError(t, err)
 	assert.Equal(t, "user1", api.userID)
 	require.Len(t, api.preferences, 1)
@@ -43,6 +43,17 @@ func TestSetAuthUser(t *testing.T) {
 	}, api.preferences[0])
 }
 
+func TestSetAuthUserEmail(t *testing.T) {
+	api := &preferenceAPI{}
+	p := &Plugin{}
+	p.API = api
+
+	err := p.SetAuthUser("user1", "alice@example.com")
+	require.NoError(t, err)
+	require.Len(t, api.preferences, 1)
+	assert.Equal(t, "alice@example.com", api.preferences[0].Value)
+}
+
 func TestSetAuthUserError(t *testing.T) {
 	api := &preferenceAPI{
 		err: model.NewAppError("UpdatePreferencesForUser", "test.error", nil, "", http.StatusInternalServerError),
@@ -50,7 +61,7 @@ func TestSetAuthUserError(t *testing.T) {
 	p := &Plugin{}
 	p.API = api
 
-	err := p.SetAuthUser("user1", 1)
+	err := p.SetAuthUser("user1", "1")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "failed to update authuser preference")
 }

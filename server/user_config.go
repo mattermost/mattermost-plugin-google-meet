@@ -5,7 +5,6 @@ package main
 
 import (
 	"fmt"
-	"strconv"
 
 	"github.com/mattermost/mattermost/server/public/model"
 )
@@ -16,12 +15,12 @@ func authUserPreferenceCategory() string {
 	return "pp_" + manifestID()
 }
 
-func (p *Plugin) SetAuthUser(userID string, authUser int) error {
+func (p *Plugin) SetAuthUser(userID string, authUser string) error {
 	preference := model.Preference{
 		UserId:   userID,
 		Category: authUserPreferenceCategory(),
 		Name:     authUserPreferenceName,
-		Value:    strconv.Itoa(authUser),
+		Value:    authUser,
 	}
 
 	if appErr := p.API.UpdatePreferencesForUser(userID, []model.Preference{preference}); appErr != nil {
