@@ -4,11 +4,84 @@
 package kvstore
 
 import (
+	"bytes"
+	"encoding/json"
 	"testing"
 
+	"github.com/mattermost/mattermost/server/public/model"
+	"github.com/mattermost/mattermost/server/public/plugin"
+	"github.com/mattermost/mattermost/server/public/pluginapi"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// fakeKVAPI implements only the KV calls SetOAuth2TokenScope makes; any other call panics.
+type fakeKVAPI struct {
+	plugin.API
+	value   []byte
+	setOK   bool
+	setOpts *model.PluginKVSetOptions
+	setVal  []byte
+}
+
+func (f *fakeKVAPI) KVGet(_ string) ([]byte, *model.AppError) { return f.value, nil }
+
+func (f *fakeKVAPI) KVSetWithOptions(_ string, value []byte, opts model.PluginKVSetOptions) (bool, *model.AppError) {
+	f.setVal = value
+	f.setOpts = &opts
+	return f.setOK, nil
+}
+
+func TestSetOAuth2TokenScope(t *testing.T) {
+	const encKey = "test-encryption-key"
+	stored := func(t *testing.T, accessToken string) []byte {
+		t.Helper()
+		data, err := json.Marshal(&OAuth2Token{AccessToken: accessToken})
+		require.NoError(t, err)
+		encrypted, err := encrypt(data, encKey)
+		require.NoError(t, err)
+		return encrypted
+	}
+
+	t.Run("writes scope atomically when the token is unchanged", func(t *testing.T) {
+		current := stored(t, "access")
+		api := &fakeKVAPI{value: current, setOK: true}
+		kv := NewKVStore(pluginapi.NewClient(api, nil), encKey)
+
+		saved, err := kv.SetOAuth2TokenScope("user1", "access", "scope-a")
+		require.NoError(t, err)
+		assert.True(t, saved)
+
+		require.NotNil(t, api.setOpts)
+		assert.True(t, api.setOpts.Atomic)
+		assert.True(t, bytes.Equal(current, api.setOpts.OldValue))
+		data, err := decrypt(api.setVal, encKey)
+		require.NoError(t, err)
+		var token OAuth2Token
+		require.NoError(t, json.Unmarshal(data, &token))
+		assert.Equal(t, "access", token.AccessToken)
+		assert.Equal(t, "scope-a", token.Scope)
+	})
+
+	t.Run("skips when the stored token was replaced", func(t *testing.T) {
+		api := &fakeKVAPI{value: stored(t, "newer-access")}
+		kv := NewKVStore(pluginapi.NewClient(api, nil), encKey)
+
+		saved, err := kv.SetOAuth2TokenScope("user1", "access", "scope-a")
+		require.NoError(t, err)
+		assert.False(t, saved)
+		assert.Nil(t, api.setOpts, "should not write")
+	})
+
+	t.Run("reports a lost compare-and-set race", func(t *testing.T) {
+		api := &fakeKVAPI{value: stored(t, "access"), setOK: false}
+		kv := NewKVStore(pluginapi.NewClient(api, nil), encKey)
+
+		saved, err := kv.SetOAuth2TokenScope("user1", "access", "scope-a")
+		require.NoError(t, err)
+		assert.False(t, saved)
+	})
+}
 
 func TestEncryptDecrypt(t *testing.T) {
 	key := "test-encryption-key"

@@ -634,6 +634,56 @@ func TestPollSubscription_NoTokenSkipped(t *testing.T) {
 	assert.Nil(t, api.post, "no post should be created when token is missing")
 }
 
+func TestPollScopeGuards(t *testing.T) {
+	cases := []struct {
+		name        string
+		scope       string
+		expectCalls bool
+	}{
+		{"readonly scope polls", meetScopeReadonly, true},
+		{"created scope polls app-created spaces", meetScopeCreated, true},
+		{"no meet scope skips", calendarScopeEventsReadonly, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			paths := map[string]int{}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				paths[r.URL.Path]++
+				w.WriteHeader(http.StatusOK)
+				require.NoError(t, json.NewEncoder(w).Encode(map[string]any{}))
+			}))
+			defer server.Close()
+
+			origURL := googleMeetURL
+			origClient := httpClient
+			googleMeetURL = server.URL + "/v2"
+			httpClient = server.Client()
+			defer func() { googleMeetURL = origURL; httpClient = origClient }()
+
+			api := &mockPluginAPI{siteURL: "http://localhost:8065", captureAllPosts: true}
+			kv := newMockKVStore()
+			kv.tokens["user1"] = &kvstore.OAuth2Token{AccessToken: "access", Expiry: time.Now().Add(time.Hour), Scope: tc.scope}
+			require.NoError(t, kv.StoreAdHocMeetingPost("spaces/adhoc1", &kvstore.AdHocMeetingPost{
+				MeetingPostID: "post1",
+				ChannelID:     "chan1",
+				UserID:        "user1",
+			}))
+			require.NoError(t, kv.AddToAdHocIndex("spaces/adhoc1"))
+
+			p := pollTestPlugin(t, api, kv)
+			p.pollSubscription(kv, &kvstore.Subscription{SpaceID: "spaces/abc123", ChannelID: "chan1", CreatedBy: "user1"})
+			p.pollAdHocMeetings(kv)
+
+			if tc.expectCalls {
+				assert.Equal(t, 2, paths["/v2/conferenceRecords"], "both pollers should list conference records")
+			} else {
+				assert.Empty(t, paths, "pollers should not call Google without a Meet scope")
+			}
+			assert.Empty(t, api.allPosts)
+		})
+	}
+}
+
 // TestPollAdHocMeetings verifies that a transcript posted as a reply to the original
 // /meet start post when the conference record appears for an ad-hoc meeting.
 func TestPollAdHocMeetings_TranscriptPostedAsReply(t *testing.T) {
