@@ -35,6 +35,15 @@ export type FakeRequest = {method: string; host: string; path: string; query: st
 
 export type FakeSpace = {name: string; meetingCode: string; meetingUri: string; owner: FakeGoogleUserKey};
 
+export type FakeConference = {name: string; space: string; startTime: string; endTime?: string};
+
+export type FakeArtifactKind = 'recording' | 'transcript' | 'smartNote';
+
+/** A recording, transcript or smart note. `exportUri` is the Drive or Docs link Google returns. */
+export type FakeArtifact = {name: string; state: 'STARTED' | 'ENDED' | 'FILE_GENERATED'; startTime: string; endTime?: string; resource: string; exportUri: string};
+
+export type FakeEvent = {id: string; status: string; summary: string; start: {dateTime?: string; date?: string}; end: {dateTime?: string; date?: string}; conferenceId?: string};
+
 export const fakeGoogle = {
     /** Clears everything. `keepViolations` keeps the violation lists (the per-test reset in lib/test.ts). */
     reset: (keepViolations = false) => control('POST', 'reset', {keepViolations}),
@@ -50,6 +59,54 @@ export const fakeGoogle = {
     failNext: (methodId: string, status: number, reason?: string) => control('POST', 'fail', {methodId, status, reason}),
 
     spaces: async () => (await control<{value: FakeSpace[]}>('GET', 'spaces')).value,
+    /** A space `user` created in Google Meet itself, outside Mattermost (what /meet subscription add points at). */
+    createSpace: (user: FakeGoogleUserKey = 'owner') => control<FakeSpace>('POST', 'spaces', {user}),
+
+    /**
+     * A conference in `space` (a space name or meeting code). Offsets are seconds from now, so a test
+     * backdates a conference instead of waiting; leave `endOffsetSeconds` out for one still running.
+     */
+    startConference: (space: string, times: {startOffsetSeconds?: number; endOffsetSeconds?: number} = {}) =>
+        control<FakeConference>('POST', 'conferences', {space, ...times}),
+    /** Ends a conference, `endOffsetSeconds` from now (default: now). */
+    endConference: (conference: FakeConference, endOffsetSeconds = 0) =>
+        control<FakeConference>('PATCH', `conferences/${conference.name.split('/')[1]}`, {endOffsetSeconds}),
+    /**
+     * Ends a conference at a fixed time (epoch ms), waiting until that time has passed, since the
+     * plugin only treats a conference as ended once its end time is in the past. A summary's meeting
+     * length runs from the meeting post's create_at to this end, so ending at create_at plus a few
+     * seconds gives the same length however long the test took.
+     */
+    endConferenceAt: async (conference: FakeConference, at: number) => {
+        const wait = at - Date.now();
+        if (wait > 0) {
+            await new Promise((resolve) => setTimeout(resolve, wait + 100));
+        }
+        return fakeGoogle.endConference(conference, (at - Date.now()) / 1000);
+    },
+
+    /**
+     * Adds an artifact to a conference, by default already generated (FILE_GENERATED). Passing the
+     * `name` of an existing one changes its state instead. Transcript entries are spoken by `speaker`
+     * (a participant ID, default p1), five seconds apart from the conference start.
+     */
+    addArtifact: (
+        conference: FakeConference,
+        kind: FakeArtifactKind,
+        options: {state?: FakeArtifact['state']; name?: string; entries?: Array<{text: string; speaker?: string}>} = {},
+    ) => control<FakeArtifact>('POST', 'artifacts', {conference: conference.name, kind, ...options}),
+
+    /** An event on `user`'s primary calendar. `conferenceId` is the meeting code of its Meet link. */
+    addEvent: (event: {
+        user?: FakeGoogleUserKey;
+        summary?: string;
+        startOffsetSeconds?: number;
+        endOffsetSeconds?: number;
+        conferenceId?: string;
+        status?: 'confirmed' | 'cancelled';
+        allDay?: boolean;
+    }) => control<FakeEvent>('POST', 'events', event),
+
     requests: async () => (await control<{value: FakeRequest[]}>('GET', 'requests')).value,
 
     /** Everything recorded so far, including `late`: violations deferred past the test that caused them. */
@@ -59,3 +116,21 @@ export const fakeGoogle = {
     /** Moves the current violations to `late`, labelled with the last checked test, which global teardown fails the run on. */
     deferViolations: () => control<{value: string[]}>('POST', 'violations/defer'),
 };
+
+/**
+ * Resolves once the fake has seen no new request for `quietMs`. Throws if requests keep coming for
+ * `timeoutMs`, so a caller never acts on a request log that is still growing.
+ */
+export async function waitUntilQuiet(quietMs = 1_000, timeoutMs = 15_000) {
+    const deadline = Date.now() + timeoutMs;
+    let seen = (await fakeGoogle.requests()).length;
+    while (Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, quietMs));
+        const now = (await fakeGoogle.requests()).length;
+        if (now === seen) {
+            return;
+        }
+        seen = now;
+    }
+    throw new Error(`Fake Google was still receiving requests after ${timeoutMs / 1000}s.`);
+}

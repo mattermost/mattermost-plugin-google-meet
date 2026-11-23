@@ -16,3 +16,20 @@ export async function waitForMeetWebapp(channelsPage: ChannelsPage) {
         return Boolean(store?.getState()?.plugins?.postTypes?.custom_google_meet);
     });
 }
+
+/**
+ * Replaces window.open in the tab with a recorder, so a test can tell which tab the meeting_started
+ * websocket handler (webapp/src/websocket/meeting_started.ts) opened the meeting from. It opens with
+ * noopener, so the new tab's opener can't tell. Returns a function that reads the URLs opened so far.
+ */
+export async function recordWindowOpen(channelsPage: ChannelsPage): Promise<() => Promise<string[]>> {
+    await channelsPage.page.evaluate(() => {
+        const opened: string[] = [];
+        (window as any).meetOpened = opened;
+        window.open = (url?: string | URL) => {
+            opened.push(String(url));
+            return null;
+        };
+    });
+    return () => channelsPage.page.evaluate(() => (window as any).meetOpened as string[]);
+}

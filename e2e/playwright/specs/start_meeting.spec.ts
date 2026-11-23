@@ -1,6 +1,8 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
+import {ChannelsPage} from '@mattermost/playwright-lib';
+
 import {fakeGoogle} from '../lib/fake_google';
 import {connectUser, isConnected, storedToken} from '../lib/kv';
 import {clientFor, createPrivateChannel, executeCommand, recentPosts} from '../lib/meet_api';
@@ -10,7 +12,7 @@ import {expect, test} from '../lib/test';
 import {MeetAppBar} from '../pages/meet_app_bar';
 import {MeetPosts} from '../pages/meet_posts';
 import {MeetSlashCommand} from '../pages/meet_slash_command';
-import {waitForMeetWebapp} from '../pages/meet_webapp';
+import {recordWindowOpen, waitForMeetWebapp} from '../pages/meet_webapp';
 
 const MEETING_POST_TYPE = 'custom_google_meet';
 
@@ -95,6 +97,41 @@ test.describe('start a meeting', {tag: '@contract-fake'}, () => {
         await expect(posts.joinButton()).toHaveAttribute('href', space.meetingUri);
         await newTab;
         expect(opened).toEqual([space.meetingUri]);
+    });
+
+    /**
+     * @objective Verify that only the browser tab that clicked Start Google Meet opens the meeting, while the user's other tabs just show the post
+     *
+     * @precondition
+     * The user's Google token is seeded directly into the plugin KV store (no Google sign-in); window.open is recorded in both tabs instead of opening Google Meet
+     */
+    test('opens the meeting only in the tab that started it', {tag: '@google_meet'}, async ({pw}) => {
+        // # Enable the plugin, connect a regular user and open Town Square in two tabs of the same session
+        const {adminClient, user, team} = await pw.initSetup();
+        await ensureMeetPlugin(adminClient);
+        await connectUser(user.id);
+        const {context, channelsPage} = await pw.testBrowser.login(user);
+        const otherTab = new ChannelsPage(await context.newPage());
+        const opened = [];
+        for (const tab of [channelsPage, otherTab]) {
+            await tab.goto(team.name);
+            await tab.toBeVisible();
+            await waitForMeetWebapp(tab);
+            opened.push(await recordWindowOpen(tab));
+        }
+        const [openedInFirst, openedInOther] = opened;
+
+        // # Click Start Google Meet in the first tab
+        await new MeetAppBar(channelsPage).startMeeting();
+
+        // * Verify the first tab opens the space Google created
+        const [space] = await fakeGoogle.spaces();
+        await expect.poll(openedInFirst).toEqual([space.meetingUri]);
+
+        // * Verify the second tab shows the meeting post but opens nothing
+        await expect(new MeetPosts(otherTab).joinButton()).toHaveAttribute('href', space.meetingUri);
+        await pw.wait(2000);
+        expect(await openedInOther()).toEqual([]);
     });
 
     /**
@@ -314,6 +351,9 @@ test.describe('start a meeting', {tag: '@contract-fake'}, () => {
 
     /**
      * @objective Verify that the Start Google Meet button is hidden from regular users while the plugin is not configured, and that an admin who clicks it gets a link to the System Console
+     *
+     * @precondition
+     * The plugin is enabled with an empty Google client ID and secret
      */
     test('hides the button from regular users and points admins to the System Console before the plugin is configured', {tag: '@google_meet'}, async ({pw}) => {
         // # Enable the plugin without an OAuth client
