@@ -19,9 +19,9 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  # Two servers: the release line the plugin supports at minimum (min_server_version 12.0.0 in
-  # plugin.json; bump this with it), pinned to a patch release so runs are reproducible, and master,
-  # which catches core changes that break the plugin before they ship.
+  # Two servers: the release branch of the oldest version the plugin supports (min_server_version
+  # 12.0.0 in plugin.json; bump this with it), which picks up its patch releases without a bump here,
+  # and master, which catches core changes that break the plugin before they ship.
   # Only min-server gates merges: master moves daily, so a core regression there should be visible
   # without blocking unrelated plugin PRs.
   fake-google:
@@ -34,7 +34,7 @@ jobs:
       matrix:
         include:
           - server: min-server
-            image: mattermost/mattermost-enterprise-edition:12.0.2
+            image: mattermost/mattermost-enterprise-edition:release-12.0
           - server: master
             image: mattermostdevelopment/mattermost-enterprise-edition:master
     permissions:

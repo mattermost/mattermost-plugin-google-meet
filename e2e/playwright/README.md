@@ -20,7 +20,7 @@ The stack's default ports differ from the other plugins' e2e stacks, so they can
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `MM_IMAGE` | `mattermost/mattermost-enterprise-edition:12.0.2` | Server image (amd64 only; on Apple silicon use Docker Desktop's Rosetta emulation) |
+| `MM_IMAGE` | `mattermost/mattermost-enterprise-edition:release-12.0` | Server image (amd64 only; on Apple silicon use Docker Desktop's Rosetta emulation) |
 | `MM_PORT` | `8085` | Mattermost port, on the host and in the container; also the SiteURL port |
 | `FAKE_GOOGLE_PORT` | `8100` | Fake Google's control API and browser pages, on the host |
 | `E2E_FAKE_HTTPS_PORT` | `8463` | Fake Google's HTTPS, on the host (443 in the Cursor agent environment, where the browser maps `accounts.google.com` to it) |
