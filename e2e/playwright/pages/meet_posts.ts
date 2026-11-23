@@ -6,8 +6,9 @@ import type {Locator, Page} from '@playwright/test';
 
 /**
  * The plugin's posts in the center channel: the replies to `/meet` and to the Start Google Meet
- * button (ephemeral posts), and the meeting post (webapp/src/components/post_type_meeting.tsx).
- * Texts from server/command/command.go and server/api.go.
+ * button (ephemeral posts), the meeting post (webapp/src/components/post_type_meeting.tsx), and the
+ * conference post the poller makes for a subscribed space. Texts from server/command/command.go,
+ * server/api.go and server/artifact_post.go.
  */
 export class MeetPosts {
     constructor(private readonly channelsPage: ChannelsPage) {}
@@ -131,5 +132,37 @@ export class MeetPosts {
 
     joinButton(post: Locator = this.meetingPost): Locator {
         return post.getByRole('link', {name: 'Join meeting'});
+    }
+
+    // Conference posts (server/artifact_post.go). The poller posts one when a conference starts in
+    // a subscribed space, and rewrites it, like a meeting post, when the meeting ends.
+
+    get conferencePost(): Locator {
+        return this.postWithText('A new Google Meet conference has started.');
+    }
+
+    get endedMeetingPost(): Locator {
+        return this.postWithText('The meeting has ended.');
+    }
+
+    meetingSummary(post: Locator = this.endedMeetingPost): Locator {
+        return post.getByRole('heading', {name: 'Meeting Summary'});
+    }
+
+    /** A link in the ended meeting's summary: Recording link, Transcript link or Smart notes link. */
+    summaryLink(label: string, post: Locator = this.endedMeetingPost): Locator {
+        return post.getByRole('link', {name: label, exact: true});
+    }
+
+    // For screenshots
+
+    /** The card the webapp renders for a meeting or conference post, without the poster's name and avatar. */
+    card(post: Locator): Locator {
+        return post.locator('.attachment').first();
+    }
+
+    /** The summary's "Date:" line, which changes from run to run. */
+    summaryDate(post: Locator = this.endedMeetingPost): Locator {
+        return post.getByText(/^Date: /);
     }
 }

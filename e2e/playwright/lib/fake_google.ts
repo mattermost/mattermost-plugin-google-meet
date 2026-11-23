@@ -49,6 +49,8 @@ export type FakeArtifact = {name: string; state: 'STARTED' | 'ENDED' | 'FILE_GEN
  */
 export type FakeTranscriptEntry = {text: string; speaker?: string; speakerName?: string; speakerKind?: 'signedinUser' | 'anonymousUser' | 'phoneUser'};
 
+export type FakeEvent = {id: string; status: string; summary: string; start: {dateTime?: string; date?: string}; end: {dateTime?: string; date?: string}; conferenceId?: string};
+
 export const fakeGoogle = {
     /** Clears everything. `keepViolations` keeps the violation lists (the per-test reset in lib/test.ts). */
     reset: (keepViolations = false) => control('POST', 'reset', {keepViolations}),
@@ -64,6 +66,8 @@ export const fakeGoogle = {
     failNext: (methodId: string, status: number, reason?: string) => control('POST', 'fail', {methodId, status, reason}),
 
     spaces: async () => (await control<{value: FakeSpace[]}>('GET', 'spaces')).value,
+    /** A space `user` created in Google Meet itself, outside Mattermost (what /meet subscription add points at). */
+    createSpace: (user: FakeGoogleUserKey = 'owner') => control<FakeSpace>('POST', 'spaces', {user}),
 
     /**
      * A conference in `space` (a space name or meeting code). Offsets are seconds from now, so a test
@@ -74,17 +78,41 @@ export const fakeGoogle = {
     /** Ends a conference, `endOffsetSeconds` from now (default: now). */
     endConference: (conference: FakeConference, endOffsetSeconds = 0) =>
         control<FakeConference>('PATCH', `conferences/${conference.name.split('/')[1]}`, {endOffsetSeconds}),
+    /**
+     * Ends a conference at a fixed time (epoch ms), waiting until that time has passed, since the
+     * plugin only treats a conference as ended once its end time is in the past. A summary's meeting
+     * length runs from the meeting post's create_at to this end, so ending at create_at plus a few
+     * seconds gives the same length however long the test took.
+     */
+    endConferenceAt: async (conference: FakeConference, at: number) => {
+        const wait = at - Date.now();
+        if (wait > 0) {
+            await new Promise((resolve) => setTimeout(resolve, wait + 100));
+        }
+        return fakeGoogle.endConference(conference, (at - Date.now()) / 1000);
+    },
 
     /**
      * Adds an artifact to a conference, by default already generated (FILE_GENERATED). Passing the
-     * `name` of an existing one changes its state instead. Transcript entries are five seconds apart
-     * from the conference start.
+     * `name` of an existing one changes its state instead. Transcript entries are spoken by `speaker`
+     * (a participant ID, default p1), five seconds apart from the conference start.
      */
     addArtifact: (
         conference: FakeConference,
         kind: FakeArtifactKind,
         options: {state?: FakeArtifact['state']; name?: string; entries?: FakeTranscriptEntry[]} = {},
     ) => control<FakeArtifact>('POST', 'artifacts', {conference: conference.name, kind, ...options}),
+
+    /** An event on `user`'s primary calendar. `conferenceId` is the meeting code of its Meet link. */
+    addEvent: (event: {
+        user?: FakeGoogleUserKey;
+        summary?: string;
+        startOffsetSeconds?: number;
+        endOffsetSeconds?: number;
+        conferenceId?: string;
+        status?: 'confirmed' | 'cancelled';
+        allDay?: boolean;
+    }) => control<FakeEvent>('POST', 'events', event),
 
     requests: async () => (await control<{value: FakeRequest[]}>('GET', 'requests')).value,
 

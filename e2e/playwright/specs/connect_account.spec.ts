@@ -155,6 +155,9 @@ test.describe('connect a Google account', {tag: '@contract-fake'}, () => {
 
     /**
      * @objective Verify that the OAuth callback rejects a missing code or state, an unknown state, and a state that was already used
+     *
+     * @precondition
+     * The callback is called directly, as Google's redirect would call it, with no Google sign-in
      */
     test('rejects OAuth callbacks with a missing parameter, an unknown state or a reused state', {tag: '@google_meet'}, async ({pw}) => {
         // # Enable the plugin and log in as a regular user
@@ -230,6 +233,9 @@ test.describe('connect a Google account', {tag: '@contract-fake'}, () => {
 
     /**
      * @objective Verify that connecting while the plugin has no OAuth client tells a regular user to contact an admin and gives an admin a link to the System Console
+     *
+     * @precondition
+     * The plugin is enabled with an empty Google client ID and secret
      */
     test('explains how to configure the plugin when connecting before it is configured', {tag: '@google_meet'}, async ({pw}) => {
         // # Enable the plugin without an OAuth client
