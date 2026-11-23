@@ -188,7 +188,11 @@ test('answers every Meet route the plugin calls, empty and populated, within the
     // A finished conference with one artifact of each kind, a transcript with entries, and one still in progress.
     const record = await control('POST', 'conferences', {space: space.meetingCode, startOffsetSeconds: -600, endOffsetSeconds: -60});
     await control('POST', 'artifacts', {conference: record.name, kind: 'recording'});
-    const transcript = await control('POST', 'artifacts', {conference: record.name, kind: 'transcript', entries: [{text: 'Hello'}, {text: 'Hi', speaker: 'p2'}]});
+    const transcript = await control('POST', 'artifacts', {conference: record.name, kind: 'transcript', entries: [
+        {text: 'Hello'},
+        {text: 'Hi', speaker: 'p2', speakerName: 'Guest', speakerKind: 'anonymousUser'},
+        {text: 'Hey', speaker: 'p3', speakerName: '+1 555-***-**12', speakerKind: 'phoneUser'},
+    ]});
     await control('POST', 'artifacts', {conference: record.name, kind: 'smartNote', state: 'STARTED'});
 
     const listed = await google(token, 'GET', '/v2/conferenceRecords', filter(new Date(Date.now() - 3_600_000).toISOString()));
@@ -205,7 +209,14 @@ test('answers every Meet route the plugin calls, empty and populated, within the
     assert.equal(notes[0].state, 'STARTED');
     assert.equal(notes[0].docsDestination, undefined);
     const entries = (await google(token, 'GET', `/v2/${transcript.name}/entries`)).body.transcriptEntries;
-    assert.deepEqual(entries.map((e: Json) => e.text), ['Hello', 'Hi']);
+    assert.deepEqual(entries.map((e: Json) => e.text), ['Hello', 'Hi', 'Hey']);
+    // Entries name only the participant; the display name is on whichever one user kind is set.
+    const participants = await Promise.all(entries.map(async (e: Json) => (await google(token, 'GET', `/v2/${e.participant}`)).body));
+    assert.deepEqual(participants.map((p: Json) => p.name), entries.map((e: Json) => e.participant));
+    assert.deepEqual(participants.map((p: Json) => Object.keys(p).filter((k) => k.endsWith('User'))), [['signedinUser'], ['anonymousUser'], ['phoneUser']]);
+    assert.deepEqual(participants.map((p: Json) => (p.signedinUser ?? p.anonymousUser ?? p.phoneUser).displayName), ['Participant p1', 'Guest', '+1 555-***-**12']);
+    assert.match(participants[0].signedinUser.user, /^users\//);
+    assert.equal((await google(token, 'GET', `/v2/${record.name}/participants/nobody`)).status, 404);
 
     assert.deepEqual(await violations(), []);
 });

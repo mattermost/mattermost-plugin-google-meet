@@ -37,6 +37,7 @@ type mockPluginAPI struct {
 	captureAllPosts bool
 	allPosts        []*model.Post
 	wsPublished     []mockWSPublish
+	uploads         [][]byte
 }
 
 type mockWSPublish struct {
@@ -122,7 +123,8 @@ func (m *mockPluginAPI) SendEphemeralPost(_ string, post *model.Post) *model.Pos
 	return post
 }
 
-func (m *mockPluginAPI) UploadFile(_ []byte, channelID, filename string) (*model.FileInfo, *model.AppError) {
+func (m *mockPluginAPI) UploadFile(data []byte, channelID, filename string) (*model.FileInfo, *model.AppError) {
+	m.uploads = append(m.uploads, data)
 	return &model.FileInfo{Id: model.NewId(), Name: filename, ChannelId: channelID}, nil
 }
 

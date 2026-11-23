@@ -42,6 +42,13 @@ export type FakeArtifactKind = 'recording' | 'transcript' | 'smartNote';
 /** A recording, transcript or smart note. `exportUri` is the Drive or Docs link Google returns. */
 export type FakeArtifact = {name: string; state: 'STARTED' | 'ENDED' | 'FILE_GENERATED'; startTime: string; endTime?: string; resource: string; exportUri: string};
 
+/**
+ * A transcript entry. `speaker` is the participant ID (default p1); the fake creates that
+ * participant the first time it speaks, as a `speakerKind` (default signedinUser) named
+ * `speakerName` (default "Participant <id>").
+ */
+export type FakeTranscriptEntry = {text: string; speaker?: string; speakerName?: string; speakerKind?: 'signedinUser' | 'anonymousUser' | 'phoneUser'};
+
 export type FakeEvent = {id: string; status: string; summary: string; start: {dateTime?: string; date?: string}; end: {dateTime?: string; date?: string}; conferenceId?: string};
 
 export const fakeGoogle = {
@@ -93,7 +100,7 @@ export const fakeGoogle = {
     addArtifact: (
         conference: FakeConference,
         kind: FakeArtifactKind,
-        options: {state?: FakeArtifact['state']; name?: string; entries?: Array<{text: string; speaker?: string}>} = {},
+        options: {state?: FakeArtifact['state']; name?: string; entries?: FakeTranscriptEntry[]} = {},
     ) => control<FakeArtifact>('POST', 'artifacts', {conference: conference.name, kind, ...options}),
 
     /** An event on `user`'s primary calendar. `conferenceId` is the meeting code of its Meet link. */

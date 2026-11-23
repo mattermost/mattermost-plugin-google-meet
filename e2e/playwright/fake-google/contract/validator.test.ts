@@ -19,6 +19,7 @@ test('matches the Meet and Calendar routes the plugin calls to their documented 
         ['GET', '/v2/spaces/abc-mnop-xyz', 'meet.spaces.get'],
         ['GET', '/v2/conferenceRecords', 'meet.conferenceRecords.list'],
         ['GET', '/v2/conferenceRecords/rec1', 'meet.conferenceRecords.get'],
+        ['GET', '/v2/conferenceRecords/rec1/participants/p1', 'meet.conferenceRecords.participants.get'],
         ['GET', '/v2/conferenceRecords/rec1/recordings', 'meet.conferenceRecords.recordings.list'],
         ['GET', '/v2/conferenceRecords/rec1/transcripts', 'meet.conferenceRecords.transcripts.list'],
         ['GET', '/v2/conferenceRecords/rec1/transcripts/t1/entries', 'meet.conferenceRecords.transcripts.entries.list'],
@@ -49,6 +50,14 @@ test('rejects fields with the wrong type or a malformed timestamp', () => {
     const errors = contract.validateResponse(match, new URLSearchParams(), 200, {name: 42, space: 'spaces/abc', startTime: 'yesterday'});
     assert.match(errors.join('\n'), /\/name must be string/);
     assert.match(errors.join('\n'), /\/startTime must be an RFC 3339 date-time/);
+});
+
+test('rejects a speaker name on transcript entries, which Google keeps on the participant', () => {
+    const match = contract.match('GET', '/v2/conferenceRecords/rec1/transcripts/t1/entries')!;
+    const entry = {name: 'e1', participant: 'conferenceRecords/rec1/participants/p1', text: 'Hi', startTime: '2026-01-01T00:00:00Z', endTime: '2026-01-01T00:00:01Z'};
+    assert.deepEqual(contract.validateResponse(match, new URLSearchParams(), 200, {transcriptEntries: [entry]}), []);
+    const invented = contract.validateResponse(match, new URLSearchParams(), 200, {transcriptEntries: [{...entry, participantDevice: {displayName: 'Alice'}}]});
+    assert.match(invented.join('\n'), /has field "participantDevice"/);
 });
 
 test('rejects artifact states outside the documented enum', () => {
