@@ -96,12 +96,16 @@ export class MeetPosts {
         return this.postWithText(`Google Meet links will now use account index ${index}.`);
     }
 
+    authUserEmailSaved(email: string): Locator {
+        return this.postWithText(`Google Meet links will now use Google account ${email}.`);
+    }
+
     get authUserInvalid(): Locator {
-        return this.postWithText('The authuser value must be a non-negative whole number.');
+        return this.postWithText('The authuser value must be a non-negative whole number or an email address.');
     }
 
     get configUsage(): Locator {
-        return this.postWithText('Usage: /meet config authuser <number>.');
+        return this.postWithText('Usage: /meet config authuser <number|email>.');
     }
 
     unknownConfigSetting(name: string): Locator {

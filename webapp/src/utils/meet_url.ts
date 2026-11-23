@@ -2,7 +2,7 @@
 // See LICENSE.txt for license information.
 
 const authUserParameterName = 'authuser';
-const authUserPattern = /^\d+$/;
+const authUserPattern = /^(\d+|[^\s@]+@[^\s@]+\.[^\s@]+)$/;
 
 export interface MeetingLinks {
     displayURL: string;
@@ -30,8 +30,12 @@ function parseGoogleMeetURL(rawURL: string): URL | undefined {
     return url;
 }
 
+export function isValidAuthUser(value: string): boolean {
+    return authUserPattern.test(value);
+}
+
 function normalizeAuthUser(value: string): string {
-    return authUserPattern.test(value) ? value : '';
+    return isValidAuthUser(value) ? value : '';
 }
 
 export function isAllowedGoogleMeetURL(rawURL: string): boolean {

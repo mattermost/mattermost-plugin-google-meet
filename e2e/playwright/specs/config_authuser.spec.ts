@@ -49,7 +49,43 @@ test.describe('choose the Google account index for Meet links', {tag: '@contract
     });
 
     /**
-     * @objective Verify that /meet config rejects a missing, negative or non-numeric account index and an unknown setting
+     * @objective Verify that /meet config authuser accepts an email address and the join button and the auto-opened tab carry it URL-encoded, while the displayed URL stays clean
+     *
+     * @precondition
+     * The user's Google token is seeded directly into the plugin KV store (no Google sign-in)
+     */
+    test('opens Meet links with the configured Google account email', {tag: '@google_meet'}, async ({pw}) => {
+        // # Enable the plugin, connect a regular user and log in
+        const {adminClient, user, team} = await pw.initSetup();
+        await ensureMeetPlugin(adminClient);
+        await connectUser(user.id);
+        const {context, channelsPage} = await pw.testBrowser.login(user);
+        const opened = await stubMeetJoinPages(context);
+        await channelsPage.goto(team.name);
+        await channelsPage.toBeVisible();
+        await waitForMeetWebapp(channelsPage);
+        const posts = new MeetPosts(channelsPage);
+
+        // # Set the Google account to an email address
+        await new MeetSlashCommand(channelsPage).run('config', 'authuser', 'alice@example.com');
+
+        // * Verify the plugin confirms the setting
+        await expect(posts.authUserEmailSaved('alice@example.com')).toBeVisible();
+
+        // # Start a meeting from the button
+        const newTab = context.waitForEvent('page');
+        await new MeetAppBar(channelsPage).startMeeting();
+        await newTab;
+
+        // * Verify the join button and the new tab add the encoded email, and the displayed URL does not
+        const [space] = await fakeGoogle.spaces();
+        await expect(posts.joinButton()).toHaveAttribute('href', `${space.meetingUri}?authuser=alice%40example.com`);
+        await expect(posts.meetingUrlLink()).toHaveText(space.meetingUri);
+        expect(opened).toEqual([`${space.meetingUri}?authuser=alice%40example.com`]);
+    });
+
+    /**
+     * @objective Verify that /meet config rejects a missing, negative, non-numeric or malformed-email value and an unknown setting
      */
     test('rejects invalid /meet config input', {tag: '@google_meet'}, async ({pw}) => {
         // # Enable the plugin and log in as a regular user
@@ -67,14 +103,15 @@ test.describe('choose the Google account index for Meet links', {tag: '@contract
         await slashCommand.run('config', 'authuser');
 
         // * Verify both show the usage
-        await expect(posts.postsWithText('Usage: /meet config authuser <number>.')).toHaveCount(2);
+        await expect(posts.postsWithText('Usage: /meet config authuser <number|email>.')).toHaveCount(2);
 
-        // # Run /meet config authuser with a negative and a non-numeric value
+        // # Run /meet config authuser with a negative value, a non-numeric value and malformed emails
         await slashCommand.run('config', 'authuser', '-1');
         await slashCommand.run('config', 'authuser', 'work');
+        await slashCommand.run('config', 'authuser', 'alice@');
 
-        // * Verify both are rejected
-        await expect(posts.postsWithText('The authuser value must be a non-negative whole number.')).toHaveCount(2);
+        // * Verify all three are rejected
+        await expect(posts.postsWithText('The authuser value must be a non-negative whole number or an email address.')).toHaveCount(3);
 
         // # Run /meet config with an unknown setting
         await slashCommand.run('config', 'theme', 'dark');

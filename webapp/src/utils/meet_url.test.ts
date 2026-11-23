@@ -1,7 +1,7 @@
 // Copyright (c) 2026-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
-import {getMeetingLinks, isAllowedGoogleMeetURL} from './meet_url';
+import {getMeetingLinks, isAllowedGoogleMeetURL, isValidAuthUser} from './meet_url';
 
 describe('getMeetingLinks', () => {
     test('adds authuser only to the target URL', () => {
@@ -21,6 +21,13 @@ describe('getMeetingLinks', () => {
         });
     });
 
+    test('adds an email authuser, encoded, only to the target URL', () => {
+        expect(getMeetingLinks('https://meet.google.com/abc-defg-hij', 'alice@example.com')).toEqual({
+            displayURL: 'https://meet.google.com/abc-defg-hij',
+            targetURL: 'https://meet.google.com/abc-defg-hij?authuser=alice%40example.com',
+        });
+    });
+
     test('leaves authuser unset for an invalid preference', () => {
         expect(getMeetingLinks('https://meet.google.com/abc-defg-hij?authuser=2', '-1')).toEqual({
             displayURL: 'https://meet.google.com/abc-defg-hij',
@@ -34,6 +41,16 @@ describe('getMeetingLinks', () => {
             displayURL: url,
             targetURL: url,
         });
+    });
+});
+
+describe('isValidAuthUser', () => {
+    test.each(['0', '1', '12', 'alice@example.com', 'a.b+c@sub.example.org'])('accepts %s', (value) => {
+        expect(isValidAuthUser(value)).toBe(true);
+    });
+
+    test.each(['', '-1', '1.5', 'one', 'alice@', '@example.com', 'alice@example', 'Alice <alice@example.com>', 'a b@example.com'])('rejects %s', (value) => {
+        expect(isValidAuthUser(value)).toBe(false);
     });
 });
 
