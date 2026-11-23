@@ -28,3 +28,13 @@
     white-space: nowrap !important;
     vertical-align: bottom;
 }
+
+/* The ended meeting's "Date: ..." line is masked, and its width changes with the date and time
+   ("Mon, Nov 3, 2026, 8:50 AM" vs "Wed, Sep 30, 2026, 12:59 PM"). Give it a fixed box too. */
+.attachment h2 + span {
+    display: inline-block !important;
+    width: 260px !important;
+    overflow: hidden !important;
+    white-space: nowrap !important;
+    vertical-align: bottom;
+}
