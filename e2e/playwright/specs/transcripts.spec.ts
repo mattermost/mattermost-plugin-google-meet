@@ -29,6 +29,7 @@ async function postTranscript(adminClient: Client4, client: Client4, channelId: 
     await beforePoll();
     await runPollCycle(adminClient);
 
+    await expect.poll(async () => (await threadReplies(client, meetingPost.id)).length, {message: 'transcript reply was not posted'}).toBeGreaterThan(0);
     const [reply] = await threadReplies(client, meetingPost.id);
     expect(reply.type).toBe('custom_gmeet_transcript');
     expect(reply.metadata.files?.[0].name).toBe('transcript.vtt');
